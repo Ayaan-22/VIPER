@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Runtime outputs
+logs/
+captures/
+reports/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Docker
+.dockerignore
+
+# Private files / Config
+.env
+config/config.yaml

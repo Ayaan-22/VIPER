@@ -1,0 +1,95 @@
+# ============================================================
+#  NIDS Configuration File
+#  Edit thresholds, windows, and alerting options here
+#  without touching any source code.
+# ============================================================
+
+network:
+  interface: "eth0"          # Network interface to monitor
+  pcap_filter: ""            # Optional BPF filter string (e.g. "tcp port 80")
+  promiscuous: true
+
+detection:
+  port_scan:
+    enabled: true
+    unique_ports_threshold: 15   # Unique destination ports in window
+    window_seconds: 10
+    whitelist_ips: []
+
+  syn_flood:
+    enabled: true
+    packets_per_second: 100
+    window_seconds: 1
+    whitelist_ips: []
+
+  udp_flood:
+    enabled: true
+    packets_per_second: 100
+    window_seconds: 1
+    whitelist_ips: []
+
+  icmp_flood:
+    enabled: true
+    packets_per_second: 100
+    window_seconds: 1
+    whitelist_ips: []
+
+  brute_force:
+    enabled: true
+    target_ports: [22, 23, 3389, 21, 25, 110, 143]  # SSH, Telnet, RDP, FTP, SMTP, POP3, IMAP
+    attempts_threshold: 10
+    window_seconds: 30
+    whitelist_ips: []
+
+  anomaly:
+    enabled: true
+    baseline_window_seconds: 60   # Window to learn baseline
+    deviation_factor: 3.0         # Std deviations before alerting
+    min_samples: 20               # Minimum samples before triggering
+
+logging:
+  level: "INFO"               # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  format: "json"              # json | text
+  file: "logs/nids.log"
+  max_bytes: 10485760         # 10 MB
+  backup_count: 5
+  console: true
+
+alerting:
+  severity_filter: "LOW"      # Minimum severity to alert: LOW | MEDIUM | HIGH | CRITICAL
+
+  email:
+    enabled: false
+    smtp_host: "smtp.gmail.com"
+    smtp_port: 587
+    username: ""
+    password: ""
+    from_addr: ""
+    to_addrs: []
+    min_severity: "HIGH"
+
+  webhook:
+    enabled: false
+    url: ""
+    headers:
+      Content-Type: "application/json"
+    min_severity: "MEDIUM"
+
+  console:
+    enabled: true
+    colorize: true
+
+capture:
+  enabled: true
+  output_dir: "captures"
+  rotate_mb: 50               # Rotate PCAP every 50 MB
+  max_files: 10
+
+reporting:
+  auto_report_interval: 300   # Seconds between auto-reports (0 = disabled)
+  report_dir: "reports"
+
+performance:
+  worker_threads: 4
+  queue_maxsize: 10000
+  stats_interval: 10          # Seconds between stats logging

@@ -1,0 +1,35 @@
+version: "3.9"
+
+services:
+  # ─── NIDS sensor ────────────────────────────────────────────────────────────
+  nids:
+    build: .
+    container_name: viper
+    restart: unless-stopped
+    # Raw-socket access
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    network_mode: host          # capture real interface traffic
+    command: ["--interface", "eth0", "--log-level", "INFO"]
+    volumes:
+      - ./config:/app/config    # mount your own config.yaml
+      - ./logs:/app/logs
+      - ./captures:/app/captures
+      - ./reports:/app/reports
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  # ─── Optional web dashboard ──────────────────────────────────────────────────
+  dashboard:
+    build: .
+    container_name: viper-dashboard
+    restart: unless-stopped
+    entrypoint: ["python", "dashboard/app.py"]
+    command: ["--log", "/app/logs/nids.log", "--host", "0.0.0.0", "--port", "5000"]
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./logs:/app/logs:ro     # read-only access to live log
+    depends_on:
+      - nids

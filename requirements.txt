@@ -1,0 +1,14 @@
+# ─── Core ────────────────────────────────────────────────────────────────────
+scapy>=2.5.0          # Packet capture and analysis
+pyyaml>=6.0           # YAML configuration file support
+
+# ─── Reporting / Visualisation ───────────────────────────────────────────────
+matplotlib>=3.7.0     # Traffic distribution charts
+numpy>=1.24.0         # Required by matplotlib + anomaly math (optional but recommended)
+
+# ─── Optional Dashboard ──────────────────────────────────────────────────────
+flask>=3.0.0          # Web dashboard (dashboard/app.py) – install only if needed
+
+# ─── Testing ─────────────────────────────────────────────────────────────────
+pytest>=7.4.0
+pytest-cov>=4.1.0     # Coverage reports

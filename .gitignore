@@ -1,25 +1,47 @@
+# Python
 __pycache__/
 *.py[cod]
-*.pyo
-.venv/
-venv/
+*$py.class
+*.so
+*.egg
 *.egg-info/
 dist/
 build/
 
-# Runtime outputs
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Testing and Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+nosetests.xml
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+.project
+.pydevproject
+.settings/
+
+# OS Specific
+.DS_Store
+Thumbs.db
+
+# Project Specific Runtime Outputs
 logs/
 captures/
 reports/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-
-# Docker
-.dockerignore
-
-# Private files / Config
+# Private Config
 .env
 config/config.yaml

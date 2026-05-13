@@ -29,7 +29,7 @@ Detects port scans, volumetric floods, brute-force attacks, and statistical traf
 ## Features
 
 | Category | Capability |
-|---|---|
+| --- | --- |
 | **Detection** | Port scan, SYN flood, UDP flood, ICMP flood, brute-force, anomaly |
 | **Windowing** | Thread-safe sliding-window counters — no stale state |
 | **Severity** | Dynamic severity escalation (LOW → CRITICAL) based on rate |
@@ -45,7 +45,7 @@ Detects port scans, volumetric floods, brute-force attacks, and statistical traf
 
 ## Architecture Overview
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                        main.py (CLI)                        │
 └──────────────────────────┬──────────────────────────────────┘
@@ -86,7 +86,7 @@ Detects port scans, volumetric floods, brute-force attacks, and statistical traf
 
 ## Directory Structure
 
-```
+```text
 viper/
 ├── main.py                      # CLI entry point
 ├── requirements.txt
@@ -207,7 +207,7 @@ python main.py --report-only --log logs/nids.log
 
 ### Help
 
-```
+```text
 sudo python main.py --help
 ```
 
@@ -216,15 +216,19 @@ sudo python main.py --help
 ## Detection Capabilities
 
 ### Port Scan
+
 Watches for a single source IP probing many distinct destination ports within a sliding window using SYN-only packets.  Whitelisted IPs and non-SYN traffic are ignored to reduce false positives.
 
 ### SYN / UDP / ICMP Flood
+
 Measures per-source packet rate over a 1-second sliding window.  Severity escalates to CRITICAL when the rate exceeds twice the configured threshold.
 
 ### Brute Force
+
 Counts connection attempts to configurable service ports (SSH, RDP, FTP, Telnet, SMTP, POP3, IMAP) per source over a 30-second window.  Fires a HIGH alert when the attempt count exceeds the threshold.
 
 ### Statistical Anomaly
+
 Uses **Welford's online algorithm** to maintain a per-source running mean and standard deviation of packet sizes and inter-arrival times — with no ML library required.  Alerts when a new observation deviates by more than `deviation_factor` (default: 3.0) standard deviations from the learnt baseline.
 
 ---
@@ -232,13 +236,14 @@ Uses **Welford's online algorithm** to maintain a per-source running mean and st
 ## Alerting Channels
 
 | Channel | Config key | Notes |
-|---|---|---|
+| --- | --- | --- |
 | Coloured console | `alerting.console` | Colour-coded by severity |
 | Rotating JSON log | `logging.file` | Structured, queryable with `jq` |
 | Email (SMTP) | `alerting.email` | TLS, per-severity filter |
 | HTTP Webhook | `alerting.webhook` | Slack / Teams / PagerDuty compatible |
 
 **Query the log with `jq`:**
+
 ```bash
 # All CRITICAL alerts
 jq 'select(.severity=="CRITICAL")' logs/nids.log
@@ -260,6 +265,7 @@ open http://localhost:5000
 ```
 
 The dashboard auto-refreshes every 5 seconds and shows:
+
 - Alert counters by severity
 - Live scrolling alert table
 - Detector breakdowns
@@ -270,7 +276,7 @@ The dashboard auto-refreshes every 5 seconds and shows:
 
 Reports are generated automatically every `reporting.auto_report_interval` seconds and on shutdown.
 
-```
+```text
 reports/
 ├── report_20250101_120000.txt   # Human-readable summary
 ├── report_20250101_120000.json  # Machine-readable (for SIEM ingestion)
@@ -334,7 +340,7 @@ The container requires `--cap-add NET_ADMIN --cap-add NET_RAW` (handled automati
 ## Architecture Decisions
 
 | Decision | Rationale |
-|---|---|
+| --- | --- |
 | **Sliding windows over fixed counters** | Counters reset at arbitrary boundaries causing bursts to split across windows; sliding windows give a continuous view |
 | **Thread-pool + queue** | Decouples capture (must be fast) from detection (may be slow); bounded queue prevents OOM under extreme load |
 | **Welford's algorithm** | Single-pass, O(1) per sample, numerically stable — no need for NumPy or keeping a full history buffer |

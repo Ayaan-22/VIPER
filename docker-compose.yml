@@ -1,35 +1,79 @@
-version: "3.9"
-
 services:
-  # ─── NIDS sensor ────────────────────────────────────────────────────────────
+  # ─── NIDS Sensor (Detection Engine) ─────────────────────────────────────────
   nids:
-    build: .
-    container_name: viper
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: viper-sensor
+    image: viper-nids:latest
     restart: unless-stopped
-    # Raw-socket access
+    init: true # Ensures proper handling of signals (SIGINT, SIGTERM)
+    
+    # Required for Scapy packet sniffing
     cap_add:
       - NET_ADMIN
       - NET_RAW
-    network_mode: host          # capture real interface traffic
-    command: ["--interface", "eth0", "--log-level", "INFO"]
+    
+    # Host networking allows the container to 'see' real network traffic on the host
+    network_mode: host
+    
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
+    
     volumes:
-      - ./config:/app/config    # mount your own config.yaml
+      - ./config:/app/config:ro
       - ./logs:/app/logs
       - ./captures:/app/captures
       - ./reports:/app/reports
-    environment:
-      - PYTHONUNBUFFERED=1
+    
+    command: ["--interface", "eth0", "--log-level", "INFO"]
+    
+    # Production Logging: keeps log files manageable
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10mb"
+        max-file: "3"
 
-  # ─── Optional web dashboard ──────────────────────────────────────────────────
+  # ─── Dashboard (Web Interface) ──────────────────────────────────────────────
   dashboard:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: viper-dashboard
+    image: viper-dashboard:latest
     restart: unless-stopped
-    entrypoint: ["python", "dashboard/app.py"]
-    command: ["--log", "/app/logs/nids.log", "--host", "0.0.0.0", "--port", "5000"]
+    
+    # Security: Run as non-privileged user
+    user: viperuser
+    
+    # Networking: Standard bridge for the web UI
     ports:
       - "5000:5000"
-    volumes:
-      - ./logs:/app/logs:ro     # read-only access to live log
+    
     depends_on:
-      - nids
+      nids:
+        condition: service_started
+    
+    volumes:
+      - ./logs:/app/logs:ro
+    
+    environment:
+      - PYTHONUNBUFFERED=1
+    
+    entrypoint: ["python", "dashboard/app.py"]
+    command: ["--log", "/app/logs/nids.log", "--host", "0.0.0.0", "--port", "5000"]
+    
+    # Healthcheck to verify dashboard is reachable
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10mb"
+        max-file: "3"

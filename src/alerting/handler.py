@@ -12,6 +12,7 @@ import json
 import smtplib
 import threading
 import urllib.request
+from collections import deque
 from email.mime.text import MIMEText
 from typing import List, Optional
 
@@ -25,7 +26,7 @@ class AlertHandler:
     def __init__(self, cfg: dict):
         self._cfg = cfg
         self._lock = threading.Lock()
-        self._history: List[Alert] = []
+        self._history: deque = deque(maxlen=10000)
         self._min_severity = Severity[cfg.get("severity_filter", "LOW")]
 
     # ------------------------------------------------------------------

@@ -94,10 +94,30 @@ class AnomalyDetector(BaseDetector):
         self._baseline_window: float = cfg.get("baseline_window_seconds", 60)
         self._profiles: Dict[str, _SourceProfile] = defaultdict(_SourceProfile)
         self._throttle = SlidingWindowDict(10)   # alert at most once per 10 s per src
+        
+        self._cleanup_interval: float = 60.0
+        self._last_cleanup: float = time.monotonic()
+
+    def _maybe_cleanup(self, now: float) -> None:
+        """Evict stale profiles to prevent memory leaks from inactive or spoofed IPs."""
+        self._last_cleanup = now
+        # Evict if inactive for 2x the baseline window (min 60s)
+        stale_threshold = now - max(self._baseline_window * 2, 60.0)
+        stale_keys = [
+            ip for ip, profile in self._profiles.items() 
+            if profile.last_ts < stale_threshold
+        ]
+        for ip in stale_keys:
+            del self._profiles[ip]
 
     def process(self, packet: Packet) -> None:
         if not self.enabled:
             return
+            
+        now = time.monotonic()
+        if now - self._last_cleanup > self._cleanup_interval:
+            self._maybe_cleanup(now)
+            
         if not packet.haslayer(IP):
             return
 

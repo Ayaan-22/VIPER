@@ -33,7 +33,6 @@ class PortScanDetector(BaseDetector):
         self._threshold: int = cfg.get("unique_ports_threshold", 15)
         self._port_windows = SlidingWindowDict(window)
         # Track which sources have already fired an alert in this window
-        self._alerted: set = set()
         self._alerted_window = SlidingWindowDict(window)
 
     def process(self, packet: Packet) -> None:

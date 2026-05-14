@@ -32,6 +32,7 @@ app = Flask(__name__)
 
 # In-memory alert store (populated by tailing the log file)
 _alerts: deque = deque(maxlen=500)
+_seen_alert_ids: set = set()
 _log_path: str = "logs/nids.log"
 
 # ---------------------------------------------------------------------------
@@ -128,7 +129,10 @@ def _tail_log(path: str, n: int = 200):
         except json.JSONDecodeError:
             continue
         if "alert_id" in obj:
-            _alerts.append(obj)
+            aid = obj["alert_id"]
+            if aid not in _seen_alert_ids:
+                _seen_alert_ids.add(aid)
+                _alerts.append(obj)
 
 
 # ---------------------------------------------------------------------------

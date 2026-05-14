@@ -51,7 +51,7 @@ Detects port scans, volumetric floods, brute-force attacks, and statistical traf
 └──────────────────────────┬──────────────────────────────────┘
                            │
                     ┌──────▼──────┐
-                    │  NIDSEngine  │  (src/core/engine.py)
+                    │  NIDSEngine │  (src/core/engine.py)
                     └──────┬──────┘
           ┌────────────────┼────────────────┐
           │                │                │
@@ -61,7 +61,7 @@ Detects port scans, volumetric floods, brute-force attacks, and statistical traf
    └──────┬──────┘  └─────────────┘  └────────────┘
           │ enqueue()
    ┌──────▼────────────────────────────────────────┐
-   │          PacketProcessor (queue + N workers)   │
+   │          PacketProcessor (queue + N workers)  │
    └──────┬────────────────────────────────────────┘
           │ process(packet)
    ┌──────▼────────────────────────────────────────────────────┐
@@ -350,7 +350,7 @@ reports/
 Packets are written to rotating PCAP files in `captures/`:
 
 ```bash
-# Analyse with Wireshark
+# Analyse with Wireshark (ensure Wireshark is in your system PATH, or simply double-click the .pcap file in Windows Explorer)
 wireshark captures/capture_20250101_120000.pcap
 
 # Or with tshark
@@ -406,6 +406,8 @@ The container requires `--cap-add NET_ADMIN --cap-add NET_RAW` (handled automati
 | **Dependency injection**                | Detectors are completely testable without Scapy or a network interface                                                |
 | **YAML config + deep-merge**            | Users can supply a partial config; missing keys always fall back to safe defaults                                     |
 | **JSON structured logs**                | Machine-parseable; trivially ingested by ELK, Splunk, Grafana Loki, or `jq`                                           |
+| **Bounded memory management**           | Auto-eviction of IPs and bounded queues prevent Out Of Memory (OOM) crashes during sustained DDoS                     |
+| **Burst-resistant rate calculation**    | Sliding windows use full window duration instead of instantaneous elapsed time, ignoring OS packet buffer bursts      |
 
 ---
 

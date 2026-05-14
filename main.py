@@ -80,6 +80,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Modes
     parser.add_argument(
+        "--list-interfaces",
+        action="store_true",
+        help="List available network interfaces and exit.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate config and print active detectors, then exit.",
@@ -110,6 +115,12 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
     parser = build_parser()
     args = parser.parse_args()
 
@@ -125,6 +136,20 @@ def main() -> None:
         cfg._data["logging"]["level"] = args.log_level
     if args.no_color:
         cfg._data["alerting"]["console"]["colorize"] = False
+
+    # --list-interfaces
+    if args.list_interfaces:
+        print("\n[+] Available network interfaces:\n")
+        try:
+            from scapy.all import show_interfaces
+            show_interfaces()
+        except ImportError:
+            print("[!] Scapy is not installed or configured properly.")
+        except Exception as e:
+            print(f"[!] Error retrieving interfaces: {e}")
+            if sys.platform == "win32":
+                print("    Ensure Npcap is installed in 'WinPcap API-compatible mode'.")
+        sys.exit(0)
 
     # --dry-run
     if args.dry_run:

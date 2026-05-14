@@ -1,6 +1,6 @@
 # 🛡 VIPER — Python Network Intrusion Detection System
 
-A production-ready, modular Network Intrusion Detection System built in Python.  
+A production-ready, modular Network Intrusion Detection System built in Python.
 Detects port scans, volumetric floods, brute-force attacks, and statistical traffic anomalies in real time using sliding-window algorithms and structured alerting.
 
 ---
@@ -17,7 +17,7 @@ Detects port scans, volumetric floods, brute-force attacks, and statistical traf
 8. [Detection Capabilities](#detection-capabilities)
 9. [Alerting Channels](#alerting-channels)
 10. [Web Dashboard](#web-dashboard)
-11. [Reporting & Visualisation](#reporting--visualisation)
+11. [Reporting &amp; Visualisation](#reporting--visualisation)
 12. [PCAP Export](#pcap-export)
 13. [Running Tests](#running-tests)
 14. [Docker Deployment](#docker-deployment)
@@ -28,18 +28,18 @@ Detects port scans, volumetric floods, brute-force attacks, and statistical traf
 
 ## Features
 
-| Category | Capability |
-| --- | --- |
+| Category      | Capability                                                        |
+| ------------- | ----------------------------------------------------------------- |
 | **Detection** | Port scan, SYN flood, UDP flood, ICMP flood, brute-force, anomaly |
-| **Windowing** | Thread-safe sliding-window counters — no stale state |
-| **Severity** | Dynamic severity escalation (LOW → CRITICAL) based on rate |
-| **Alerting** | Console (coloured), rotating JSON log, email, webhook |
-| **Capture** | Rotating PCAP export for offline forensics |
-| **Config** | Single YAML file — no code changes needed to tune thresholds |
-| **Dashboard** | Flask web UI with live alert feed and severity charts |
-| **Reporting** | Text + JSON reports, Matplotlib bar/pie charts |
-| **Testing** | Full pytest suite; no live interface needed |
-| **Docker** | Single-command deployment with docker-compose |
+| **Windowing** | Thread-safe sliding-window counters — no stale state              |
+| **Severity**  | Dynamic severity escalation (LOW → CRITICAL) based on rate        |
+| **Alerting**  | Console (coloured), rotating JSON log, email, webhook             |
+| **Capture**   | Rotating PCAP export for offline forensics                        |
+| **Config**    | Single YAML file — no code changes needed to tune thresholds      |
+| **Dashboard** | Flask web UI with live alert feed and severity charts             |
+| **Reporting** | Text + JSON reports, Matplotlib bar/pie charts                    |
+| **Testing**   | Full pytest suite; no live interface needed                       |
+| **Docker**    | Single-command deployment with docker-compose                     |
 
 ---
 
@@ -128,8 +128,10 @@ viper/
 ## Requirements
 
 - Python 3.9+
-- Linux / macOS (Scapy requires raw-socket access)
-- Root / `CAP_NET_RAW` privilege for live capture
+- Linux, macOS, or Windows
+- Scapy requires raw-socket access:
+  - **Linux / macOS**: Root (`sudo`) or `CAP_NET_RAW` privilege
+  - **Windows**: [Npcap](https://npcap.com/) installed (ensure "WinPcap API-compatible mode" is checked) and run terminal as Administrator
 
 ---
 
@@ -137,7 +139,7 @@ viper/
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/yourname/viper.git
+git clone https://github.com/Ayaan-22/viper.git
 cd viper
 
 # 2. Create a virtual environment (recommended)
@@ -152,7 +154,7 @@ pip install -r requirements.txt
 
 ## Configuration
 
-All settings live in **`config/config.yaml`**.  
+All settings live in **`config/config.yaml`**.
 Edit the file — no code changes required.
 
 ```yaml
@@ -188,27 +190,84 @@ alerting:
 
 ## Usage
 
+The `main.py` script is the primary entry point for the VIPER NIDS Engine. It provides several commands and flags to control the intrusion detection system.
+
+> [!IMPORTANT]
+> **Windows Users:** You **must** run your Command Prompt or PowerShell as **Administrator** to capture packets. You do not use `sudo`.
+
+### 1. Finding Your Network Interface
+
+Before starting the monitor, you must determine which network interface to listen on.
+
 ```bash
-# Basic — monitor eth0
-sudo python main.py -i eth0
-
-# Custom config file
-sudo python main.py -i eth0 --config /etc/nids/production.yaml
-
-# Increase log verbosity
-sudo python main.py -i eth0 --log-level DEBUG
-
-# Validate config and list active detectors, then exit
-sudo python main.py -i eth0 --dry-run
-
-# Post-incident: regenerate report from an existing log
-python main.py --report-only --log logs/nids.log
+# Works on both Windows and Linux to list all available interfaces
+python main.py --list-interfaces
 ```
 
-### Help
+*Note the "Name" or "Index" of the adapter that connects to your local network (e.g., `eth0` on Linux, `"Ethernet"` or `"Wi-Fi"` on Windows).*
 
-```text
-sudo python main.py --help
+### 2. Starting the NIDS Engine
+
+Use the `-i` (or `--interface`) flag to start live capture.
+
+**On Linux / macOS:**
+
+```bash
+sudo python main.py -i eth0
+```
+
+**On Windows (Run as Administrator):**
+
+```powershell
+python main.py -i "Ethernet"
+# Alternatively, you can use the interface index:
+python main.py -i 15
+```
+
+### 3. CLI Flags & Options Reference
+
+| Flag / Option         | Description                                                                        | Example Usage             |
+| --------------------- | ---------------------------------------------------------------------------------- | ------------------------- |
+| `-i`, `--interface`   | The network interface to capture traffic from. Overrides the config file.          | `-i eth0` or `-i "Wi-Fi"` |
+| `-c`, `--config`      | Path to a custom YAML configuration file. Defaults to `config/config.yaml`.        | `-c /etc/nids/prod.yaml`  |
+| `--log-level`         | Override the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).                | `--log-level DEBUG`       |
+| `--list-interfaces`   | List all available network interfaces on the host system and exit.                 | `--list-interfaces`       |
+| `--dry-run`           | Validates your config file and prints active detectors without starting a capture. | `--dry-run`               |
+| `--report-only`       | Do not capture traffic. Instead, parse an existing log file and generate a report. | `--report-only`           |
+| `--log`               | Specify the path to the log file to parse when using `--report-only`.              | `--log logs/nids.log`     |
+| `--no-color`          | Disables ANSI colour output in the terminal console.                               | `--no-color`              |
+
+### 4. Advanced Examples
+
+**Run with a custom configuration file and maximum verbosity:**
+
+```bash
+# Linux
+sudo python main.py -i eth0 -c config/high_security.yaml --log-level DEBUG
+
+# Windows
+python main.py -i "Wi-Fi" -c config/high_security.yaml --log-level DEBUG
+```
+
+**Validate your configuration without starting the engine:**
+
+```bash
+python main.py --dry-run
+```
+
+**Post-Incident Analysis:**
+If your NIDS crashed or was stopped, you can generate an HTML/PDF/Text report purely from the saved JSON logs without sniffing new packets.
+
+```bash
+python main.py --report-only --log logs/nids_yesterday.log
+```
+
+### Help Menu
+
+To view the built-in help menu at any time, run:
+
+```bash
+python main.py --help
 ```
 
 ---
@@ -235,12 +294,12 @@ Uses **Welford's online algorithm** to maintain a per-source running mean and st
 
 ## Alerting Channels
 
-| Channel | Config key | Notes |
-| --- | --- | --- |
-| Coloured console | `alerting.console` | Colour-coded by severity |
-| Rotating JSON log | `logging.file` | Structured, queryable with `jq` |
-| Email (SMTP) | `alerting.email` | TLS, per-severity filter |
-| HTTP Webhook | `alerting.webhook` | Slack / Teams / PagerDuty compatible |
+| Channel           | Config key           | Notes                                |
+| ----------------- | -------------------- | ------------------------------------ |
+| Coloured console  | `alerting.console`   | Colour-coded by severity             |
+| Rotating JSON log | `logging.file`       | Structured, queryable with `jq`      |
+| Email (SMTP)      | `alerting.email`     | TLS, per-severity filter             |
+| HTTP Webhook      | `alerting.webhook`   | Slack / Teams / PagerDuty compatible |
 
 **Query the log with `jq`:**
 
@@ -339,14 +398,14 @@ The container requires `--cap-add NET_ADMIN --cap-add NET_RAW` (handled automati
 
 ## Architecture Decisions
 
-| Decision | Rationale |
-| --- | --- |
+| Decision                                | Rationale                                                                                                             |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | **Sliding windows over fixed counters** | Counters reset at arbitrary boundaries causing bursts to split across windows; sliding windows give a continuous view |
-| **Thread-pool + queue** | Decouples capture (must be fast) from detection (may be slow); bounded queue prevents OOM under extreme load |
-| **Welford's algorithm** | Single-pass, O(1) per sample, numerically stable — no need for NumPy or keeping a full history buffer |
-| **Dependency injection** | Detectors are completely testable without Scapy or a network interface |
-| **YAML config + deep-merge** | Users can supply a partial config; missing keys always fall back to safe defaults |
-| **JSON structured logs** | Machine-parseable; trivially ingested by ELK, Splunk, Grafana Loki, or `jq` |
+| **Thread-pool + queue**                 | Decouples capture (must be fast) from detection (may be slow); bounded queue prevents OOM under extreme load          |
+| **Welford's algorithm**                 | Single-pass, O(1) per sample, numerically stable — no need for NumPy or keeping a full history buffer                 |
+| **Dependency injection**                | Detectors are completely testable without Scapy or a network interface                                                |
+| **YAML config + deep-merge**            | Users can supply a partial config; missing keys always fall back to safe defaults                                     |
+| **JSON structured logs**                | Machine-parseable; trivially ingested by ELK, Splunk, Grafana Loki, or `jq`                                           |
 
 ---
 

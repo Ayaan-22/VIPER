@@ -422,6 +422,20 @@ Run the Flask dashboard web server.
   python dashboard/app.py --log logs/nids.log --port 5000
   ```
 
+By default, the dashboard is intended for localhost use. If you bind it outside localhost, VIPER requires an API key:
+
+```bash
+export VIPER_DASHBOARD_API_KEY="replace-with-a-long-random-secret"
+python main.py --dashboard --dashboard-host 0.0.0.0
+```
+
+```powershell
+$env:VIPER_DASHBOARD_API_KEY = "replace-with-a-long-random-secret"
+python main.py --dashboard --dashboard-host 0.0.0.0
+```
+
+Authenticated requests can use either the `X-VIPER-API-Key` header, a bearer token, or HTTP Basic auth with username `viper` and the API key as the password.
+
 ### 2. Demo Mode
 
 If you want to explore the dashboard features without running packet capture or requiring elevated administrative/root privileges, you can run the dashboard in **Demo Mode**. This populates the UI with simulated, high-fidelity security events (such as port scans, floods, and brute-force attempts).
@@ -437,6 +451,8 @@ If you want to explore the dashboard features without running packet capture or 
   ```bash
   python dashboard/app.py --demo
   ```
+
+For a demo bound outside localhost, set `VIPER_DASHBOARD_API_KEY` or pass `--api-key`.
 
 ---
 
@@ -477,6 +493,12 @@ VIPER Vision can also generate a polished HTML report from the dashboard:
 curl -X POST http://localhost:5000/api/reports/generate
 ```
 
+If dashboard auth is enabled:
+
+```bash
+curl -H "X-VIPER-API-Key: $VIPER_DASHBOARD_API_KEY" -X POST http://localhost:5000/api/reports/generate
+```
+
 **On Windows (PowerShell):**
 
 ```powershell
@@ -485,10 +507,10 @@ Invoke-RestMethod -Method Post -Uri http://localhost:5000/api/reports/generate
 
 ```text
 reports/
-├── report_20250101_120000.txt   # Human-readable summary
-├── report_20250101_120000.json  # Machine-readable (for SIEM ingestion)
-├── viz_20250101_120000.png      # Bar chart: alerts by detector
-└── severity_20250101_120000.png # Pie chart: alerts by severity
+├── report_20250101_120000_1735732800000000000.txt   # Human-readable summary
+├── report_20250101_120000_1735732800000000000.json  # Machine-readable (for SIEM ingestion)
+├── viz_20250101_120000_1735732800000000000.png      # Bar chart: alerts by detector
+└── severity_20250101_120000_1735732800000000000.png # Pie chart: alerts by severity
 ```
 
 ---
@@ -499,10 +521,10 @@ Packets are written to rotating PCAP files in `captures/`:
 
 ```bash
 # Analyse with Wireshark (ensure Wireshark is in your system PATH, or simply double-click the .pcap file in Windows Explorer)
-wireshark captures/capture_20250101_120000.pcap
+wireshark captures/capture_20250101_120000_1735732800000000000.pcap
 
 # Or with tshark
-tshark -r captures/capture_20250101_120000.pcap -Y "tcp.flags.syn==1"
+tshark -r captures/capture_20250101_120000_1735732800000000000.pcap -Y "tcp.flags.syn==1"
 ```
 
 ---
@@ -533,23 +555,26 @@ Tests cover: `SlidingWindow`, `SlidingWindowDict`, `Alert`/`Severity`, `AlertHan
 # 1. Build the Docker images
 docker compose build
 
-# 2. Start all services (NIDS sensor + dashboard) in the background
+# 2. Set the dashboard API key required by the dashboard services
+export VIPER_DASHBOARD_API_KEY="replace-with-a-long-random-secret"
+
+# 3. Start all services (NIDS sensor + dashboard) in the background
 docker compose up -d
 
-# 3. View live logs from the NIDS sensor
+# 4. View live logs from the NIDS sensor
 docker compose logs -f nids
 
-# 4. Capture on a different interface
+# 5. Capture on a different interface
 docker compose run nids --interface ens3
 
-# 5. Run only the no-capture dashboard demo on http://localhost:5050
+# 6. Run only the no-capture dashboard demo on http://localhost:5050
 docker compose --profile demo up dashboard-demo
 
-# 6. Stop and clean up containers
+# 7. Stop and clean up containers
 docker compose down
 ```
 
-The sensor container requires `NET_ADMIN` and `NET_RAW` for Scapy packet capture. Host networking may be required for real capture visibility, especially on Linux; Docker Desktop on Windows/macOS has additional network capture limitations. The dashboard and demo services do not require raw socket privileges.
+The sensor container requires `NET_ADMIN` and `NET_RAW` for Scapy packet capture. Host networking may be required for real capture visibility, especially on Linux; Docker Desktop on Windows/macOS has additional network capture limitations. The dashboard and demo services do not require raw socket privileges, bind to localhost by default in Compose, and require `VIPER_DASHBOARD_API_KEY` before they start.
 
 ---
 

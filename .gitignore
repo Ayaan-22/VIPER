@@ -45,3 +45,5 @@ reports/
 # Private Config
 .env
 config/config.yaml
+
+.agents

@@ -11,7 +11,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import hmac
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -33,6 +37,7 @@ except ImportError:  # WebSockets are optional; SSE still works without this.
     Sock = None
 
 from dashboard.services.demo_data import build_demo_dataset
+from dashboard.api.models import severity_rank
 from dashboard.services.log_parser import parse_log
 from dashboard.services.metrics_service import build_metrics, to_plain
 from dashboard.services.report_service import generate_html_report
@@ -58,19 +63,39 @@ def create_app(
     captures_dir: str = "captures",
     reports_dir: str = "reports",
     interface: str = "log replay",
+    api_key: str | None = None,
+    auth_username: str = "viper",
 ) -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
+    resolved_log_path = Path(log_path).expanduser()
+    allowed_log_dir = str(resolved_log_path.parent if resolved_log_path.parent != Path("") else Path("logs"))
     app.config.update(
         VIPER_LOG_PATH=log_path,
         VIPER_DEMO=demo,
         VIPER_CAPTURES_DIR=captures_dir,
         VIPER_REPORTS_DIR=reports_dir,
         VIPER_INTERFACE=interface,
+        VIPER_API_KEY=api_key or os.getenv("VIPER_DASHBOARD_API_KEY", ""),
+        VIPER_AUTH_USERNAME=os.getenv("VIPER_DASHBOARD_AUTH_USER", auth_username),
+        VIPER_ALLOWED_LOG_DIR=os.getenv("VIPER_DASHBOARD_LOG_DIR", allowed_log_dir),
     )
     app.viper_settings = dict(DEFAULT_SETTINGS)
     app.viper_settings["log_file_path"] = log_path
 
     sock = Sock(app) if Sock else None
+
+    @app.before_request
+    def require_dashboard_auth():
+        if request.endpoint == "static":
+            return None
+        api_key_value = app.config.get("VIPER_API_KEY")
+        if not api_key_value or _request_has_valid_key(request, app.config["VIPER_AUTH_USERNAME"], api_key_value):
+            return None
+        return Response(
+            "Authentication required",
+            401,
+            {"WWW-Authenticate": 'Basic realm="VIPER Vision"'},
+        )
 
     def load_dataset() -> Tuple[list, list]:
         if app.config["VIPER_DEMO"]:
@@ -134,7 +159,10 @@ def create_app(
         sort = request.args.get("sort", "timestamp")
         reverse = request.args.get("order", "desc") == "desc"
         if sort in {"timestamp", "severity", "detector", "src_ip", "dst_ip", "protocol"}:
-            filtered.sort(key=lambda a: getattr(a, sort) or "", reverse=reverse)
+            if sort == "severity":
+                filtered.sort(key=lambda a: severity_rank(a.severity), reverse=reverse)
+            else:
+                filtered.sort(key=lambda a: getattr(a, sort) or "", reverse=reverse)
         return jsonify({"total": len(filtered), "alerts": [a.to_dict() for a in filtered[:limit]]})
 
     @app.get("/api/alerts/recent")
@@ -220,6 +248,11 @@ def create_app(
             if key == "severity_filters":
                 valid = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
                 value = [str(item).upper() for item in value if str(item).upper() in valid]
+            if key == "log_file_path":
+                try:
+                    value = str(_resolve_allowed_path(value, app.config["VIPER_ALLOWED_LOG_DIR"]))
+                except ValueError as exc:
+                    return jsonify({"error": str(exc)}), 400
             app.viper_settings[key] = value
             if key == "log_file_path":
                 app.config["VIPER_LOG_PATH"] = str(value)
@@ -290,6 +323,46 @@ def _filter_alerts(alerts, args):
     return results
 
 
+def _request_has_valid_key(req, username: str, expected_key: str) -> bool:
+    supplied = req.headers.get("X-VIPER-API-Key", "")
+    auth_header = req.headers.get("Authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        supplied = auth_header[7:].strip()
+    elif auth_header.lower().startswith("basic "):
+        try:
+            decoded = base64.b64decode(auth_header[6:], validate=True).decode("utf-8")
+            supplied_user, supplied_password = decoded.split(":", 1)
+        except (binascii.Error, ValueError, UnicodeDecodeError):
+            return False
+        return (
+            hmac.compare_digest(supplied_user, username)
+            and hmac.compare_digest(supplied_password, expected_key)
+        )
+    return hmac.compare_digest(supplied, expected_key)
+
+
+def _resolve_allowed_path(path_value: str, allowed_dir: str) -> Path:
+    requested = Path(str(path_value)).expanduser()
+    allowed = Path(allowed_dir).expanduser().resolve()
+    if not requested.is_absolute():
+        cwd_relative = requested.resolve()
+        try:
+            cwd_relative.relative_to(allowed)
+            requested = cwd_relative
+        except ValueError:
+            requested = allowed / requested
+    resolved = requested.resolve()
+    try:
+        resolved.relative_to(allowed)
+    except ValueError as exc:
+        raise ValueError(f"log_file_path must stay under {allowed}") from exc
+    return resolved
+
+
+def _is_loopback_host(host: str) -> bool:
+    return host in {"", "localhost", "127.0.0.1", "::1"}
+
+
 def _list_files(directory: str, patterns) -> list:
     base = Path(directory)
     if not base.exists():
@@ -338,17 +411,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--captures", default="captures", help="PCAP capture directory")
     parser.add_argument("--reports", default="reports", help="Report output directory")
     parser.add_argument("--interface", default="log replay", help="Interface label shown in the dashboard")
+    parser.add_argument("--api-key", default=None, help="API key required for dashboard access")
+    parser.add_argument("--auth-user", default="viper", help="Basic-auth username when API-key auth is enabled")
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    configured_key = args.api_key or os.getenv("VIPER_DASHBOARD_API_KEY", "")
+    if not _is_loopback_host(args.host) and not configured_key:
+        print(
+            "[ERROR] Set --api-key or VIPER_DASHBOARD_API_KEY before binding the dashboard outside localhost.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     app = create_app(
         log_path=args.log,
         demo=args.demo,
         captures_dir=args.captures,
         reports_dir=args.reports,
         interface=args.interface,
+        api_key=configured_key,
+        auth_username=args.auth_user,
     )
     label = "demo mode" if args.demo else f"log: {args.log}"
     print(f"[*] VIPER Vision running at http://{args.host}:{args.port} ({label})")

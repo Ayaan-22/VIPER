@@ -116,6 +116,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Dashboard port (default from config or 5000).",
     )
     parser.add_argument(
+        "--dashboard-api-key",
+        default=None,
+        help="API key required for VIPER Vision dashboard access.",
+    )
+    parser.add_argument(
+        "--dashboard-auth-user",
+        default="viper",
+        help="Basic-auth username when dashboard API-key auth is enabled.",
+    )
+    parser.add_argument(
         "--log",
         metavar="FILE",
         help="Log file path (used with --report-only or --dashboard).",
@@ -154,9 +164,9 @@ def main() -> None:
 
     # Apply CLI overrides to config dict
     if args.log_level:
-        cfg._data["logging"]["level"] = args.log_level
+        cfg.set("logging", "level", value=args.log_level)
     if args.no_color:
-        cfg._data["alerting"]["console"]["colorize"] = False
+        cfg.set("alerting", "console", "colorize", value=False)
 
     # --list-interfaces
     if args.list_interfaces:
@@ -193,17 +203,27 @@ def main() -> None:
 
     # VIPER Vision dashboard modes
     if args.dashboard or args.dashboard_demo:
+        import os
         from dashboard.app import create_app
 
         dashboard_cfg = cfg.raw().get("dashboard", {})
+        host = args.dashboard_host or dashboard_cfg.get("host", "127.0.0.1")
+        dashboard_key = args.dashboard_api_key or os.getenv("VIPER_DASHBOARD_API_KEY", "")
+        if host not in {"", "localhost", "127.0.0.1", "::1"} and not dashboard_key:
+            print(
+                "[ERROR] Set --dashboard-api-key or VIPER_DASHBOARD_API_KEY before binding the dashboard outside localhost.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         app = create_app(
             log_path=args.log or dashboard_cfg.get("log_file_path") or cfg.logging.get("file", "logs/nids.log"),
             demo=args.dashboard_demo,
             captures_dir=cfg.capture.get("output_dir", "captures"),
             reports_dir=cfg.reporting.get("report_dir", "reports"),
             interface=args.interface or cfg.network.get("interface", "log replay"),
+            api_key=dashboard_key,
+            auth_username=args.dashboard_auth_user,
         )
-        host = args.dashboard_host or dashboard_cfg.get("host", "127.0.0.1")
         port = args.dashboard_port or dashboard_cfg.get("port", 5000)
         mode = "demo mode" if args.dashboard_demo else "historical/live log mode"
         print(f"[*] VIPER Vision running at http://{host}:{port} ({mode})")
@@ -241,7 +261,7 @@ def _report_from_log(log_path: str, cfg) -> None:
                     alert_id=obj["alert_id"],
                     timestamp=obj.get("ts", 0),
                     detector=obj.get("detector", "unknown"),
-                    severity=Severity[obj.get("severity", "LOW")],
+                    severity=Severity[str(obj.get("severity", "LOW")).upper()],
                     src_ip=obj.get("src_ip", ""),
                     message=obj.get("alert_message", ""),
                 )

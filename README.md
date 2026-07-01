@@ -74,7 +74,7 @@ VIPER remains defensive and monitoring-focused. Use it only on networks where yo
           │ emit(Alert)
    ┌──────▼──────────────────────────────────────────────────┐
    │  AlertHandler  →  Console / File / Email / Webhook      │
-└─────────────────────────────────────────────────────────┘
+   └─────────────────────────────────────────────────────────┘
                          │ JSON logs
                          ▼
 ┌─────────────────────────────────────────────────────────┐

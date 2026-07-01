@@ -94,7 +94,7 @@ class RotatingPcapWriter:
 
     def _open_new_file(self) -> None:
         ts = time.strftime("%Y%m%d_%H%M%S")
-        self._current_path = self._output_dir / f"capture_{ts}.pcap"
+        self._current_path = self._output_dir / f"capture_{ts}_{time.time_ns()}.pcap"
         self._writer = PcapWriter(str(self._current_path), append=False, sync=True)
         self._bytes_written = 0
         log.info(f"Opened PCAP file: {self._current_path}")

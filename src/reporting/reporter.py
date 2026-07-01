@@ -20,6 +20,10 @@ from src.logger.logger import get_logger
 log = get_logger("reporting")
 
 
+def _unique_report_path(report_dir: Path, prefix: str, suffix: str) -> Path:
+    return report_dir / f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns()}{suffix}"
+
+
 # ---------------------------------------------------------------------------
 # Text / JSON report
 # ---------------------------------------------------------------------------
@@ -92,7 +96,7 @@ class Reporter:
         report_text = "\n".join(lines)
 
         if save:
-            fname = self._report_dir / f"report_{time.strftime('%Y%m%d_%H%M%S')}.txt"
+            fname = _unique_report_path(self._report_dir, "report", ".txt")
             fname.write_text(report_text, encoding="utf-8")
 
             # Also save JSON version
@@ -165,9 +169,7 @@ class Visualizer:
         ax.spines["right"].set_visible(False)
         plt.tight_layout()
 
-        fname = filename or str(
-            self._report_dir / f"viz_{time.strftime('%Y%m%d_%H%M%S')}.png"
-        )
+        fname = filename or str(_unique_report_path(self._report_dir, "viz", ".png"))
         plt.savefig(fname, dpi=150)
         plt.close(fig)
         log.info(f"Visualisation saved: {fname}")
@@ -203,9 +205,7 @@ class Visualizer:
         ax.set_title("Alert Severity Distribution", fontsize=13, fontweight="bold")
         plt.tight_layout()
 
-        fname = filename or str(
-            self._report_dir / f"severity_{time.strftime('%Y%m%d_%H%M%S')}.png"
-        )
+        fname = filename or str(_unique_report_path(self._report_dir, "severity", ".png"))
         plt.savefig(fname, dpi=150)
         plt.close(fig)
         return fname

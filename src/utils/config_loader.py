@@ -97,6 +97,24 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _normalize_severity(value: Any, field_name: str) -> str:
+    valid = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+    normalized = str(value or "").upper()
+    if normalized not in valid:
+        raise ValueError(f"{field_name} must be one of {', '.join(sorted(valid))}; got {value!r}")
+    return normalized
+
+
+def _validate_config(data: Dict[str, Any]) -> Dict[str, Any]:
+    alerting = data.get("alerting", {})
+    alerting["severity_filter"] = _normalize_severity(alerting.get("severity_filter", "LOW"), "alerting.severity_filter")
+    for channel, default in (("email", "HIGH"), ("webhook", "MEDIUM")):
+        channel_cfg = alerting.get(channel, {})
+        if "min_severity" in channel_cfg:
+            channel_cfg["min_severity"] = _normalize_severity(channel_cfg.get("min_severity", default), f"alerting.{channel}.min_severity")
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -125,6 +143,18 @@ class Config:
             node = node[k]
         return node
 
+    def set(self, *keys: str, value: Any) -> None:
+        """Set a nested config value, creating intermediate dictionaries."""
+        if not keys:
+            raise ValueError("at least one key is required")
+        node = self._data
+        for key in keys[:-1]:
+            child = node.setdefault(key, {})
+            if not isinstance(child, dict):
+                raise TypeError(f"Cannot set nested key below non-dict config value: {key}")
+            node = child
+        node[keys[-1]] = value
+
     def raw(self) -> Dict[str, Any]:
         return copy.deepcopy(self._data)
 
@@ -147,5 +177,5 @@ def load_config(path: Optional[str] = None) -> Config:
             stacklevel=2,
         )
 
-    merged = _deep_merge(_DEFAULTS, user_cfg)
+    merged = _validate_config(_deep_merge(_DEFAULTS, user_cfg))
     return Config(merged)

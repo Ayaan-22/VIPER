@@ -50,7 +50,7 @@ services:
     
     # Networking: Standard bridge for the web UI
     ports:
-      - "5000:5000"
+      - "127.0.0.1:5000:5000"
     
     depends_on:
       nids:
@@ -61,13 +61,14 @@ services:
     
     environment:
       - PYTHONUNBUFFERED=1
+      - VIPER_DASHBOARD_API_KEY=${VIPER_DASHBOARD_API_KEY:?Set VIPER_DASHBOARD_API_KEY before starting the dashboard}
     
     entrypoint: ["python", "dashboard/app.py"]
     command: ["--log", "/app/logs/nids.log", "--host", "0.0.0.0", "--port", "5000", "--captures", "/app/captures", "--reports", "/app/reports"]
     
     # Healthcheck to verify dashboard is reachable
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/')"]
+      test: ["CMD", "python", "-c", "import os, urllib.request; req = urllib.request.Request('http://localhost:5000/', headers={'X-VIPER-API-Key': os.environ['VIPER_DASHBOARD_API_KEY']}); urllib.request.urlopen(req)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -87,6 +88,8 @@ services:
     image: viper-dashboard:latest
     profiles: ["demo"]
     ports:
-      - "5050:5000"
+      - "127.0.0.1:5050:5000"
+    environment:
+      - VIPER_DASHBOARD_API_KEY=${VIPER_DASHBOARD_API_KEY:?Set VIPER_DASHBOARD_API_KEY before starting the dashboard demo}
     entrypoint: ["python", "dashboard/app.py"]
     command: ["--demo", "--host", "0.0.0.0", "--port", "5000"]

@@ -72,6 +72,8 @@ class _RunningStats:
 
     def z_score(self, x: float) -> float:
         if self.std == 0:
+            if self.n > 0 and x != self.mean:
+                return math.inf
             return 0.0
         return abs(x - self.mean) / self.std
 
@@ -137,18 +139,15 @@ class AnomalyDetector(BaseDetector):
             profile = self._profiles[src_ip]
 
         with profile.lock:
-            # Update inter-arrival time
             iat = now - profile.last_ts
             profile.last_ts = now
-
-            # Update stats
-            profile.size_stats.update(pkt_len)
-            profile.iat_stats.update(iat)
 
             n = profile.size_stats.n
 
             # --- still in baseline phase ---
             if n < self._min_samples:
+                profile.size_stats.update(pkt_len)
+                profile.iat_stats.update(iat)
                 return
 
             # --- check for anomalies (inside lock for consistency) ---
@@ -169,6 +168,9 @@ class AnomalyDetector(BaseDetector):
                     f"z={iat_z:.1f})"
                 )
 
+            profile.size_stats.update(pkt_len)
+            profile.iat_stats.update(iat)
+
         if anomalies and self._throttle.count(src_ip) == 0:
             self._throttle.add(src_ip)
             self.emit(
@@ -178,4 +180,3 @@ class AnomalyDetector(BaseDetector):
                 anomalies=anomalies,
                 samples=n,
             )
-

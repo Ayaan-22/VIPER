@@ -31,7 +31,7 @@ def generate_html_report(
     timeline = build_timeline(alerts)[-15:]
     payload = to_plain(metrics)
     generated = time.strftime("%Y-%m-%d %H:%M:%S")
-    filename = Path(output_dir) / f"viper_vision_{time.strftime('%Y%m%d_%H%M%S')}.html"
+    filename = Path(output_dir) / f"viper_vision_{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns()}.html"
     html_text = _render(generated, payload, alerts[-25:], suspicious, timeline)
     filename.write_text(html_text, encoding="utf-8")
 
@@ -100,4 +100,3 @@ li{{margin:8px 0}}
 <h2>Recommendations</h2>
 <p>Confirm authorization for observed traffic, preserve the JSON log and related PCAP files, review exposed services, and apply rate limits or access controls for abusive sources.</p>
 </main></body></html>"""
-

@@ -7,10 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Disable apt repository expiry checks to work around clock-skew in
-# containerised build environments.  Remove this if clock sync is reliable.
-RUN echo "Acquire::Check-Valid-Until \"false\";\nAcquire::Check-Date \"false\";" > /etc/apt/apt.conf.d/10no-check-valid-until \
-    && apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpcap-dev \
     gcc \
@@ -39,9 +36,7 @@ WORKDIR /app
 # - iproute2: networking tools
 # - tcpdump: packet analysis
 # - procps: process monitoring for healthchecks
-# Disable apt repository expiry checks (clock-skew workaround, see builder stage).
-RUN echo "Acquire::Check-Valid-Until \"false\";\nAcquire::Check-Date \"false\";" > /etc/apt/apt.conf.d/10no-check-valid-until \
-    && apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libpcap0.8 \
     iproute2 \
     tcpdump \

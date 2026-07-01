@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from base64 import b64encode
 from pathlib import Path
 
 from dashboard.services.log_parser import parse_log
@@ -85,6 +86,38 @@ class DashboardServiceTests(unittest.TestCase):
 
 
 class DashboardApiTests(unittest.TestCase):
+    def _sample_log(self) -> str:
+        records = [
+            {
+                "ts": 1767225620.0,
+                "message": "alert",
+                "alert_id": "a1",
+                "detector": "port_scan",
+                "severity": "HIGH",
+                "src_ip": "203.0.113.10",
+                "dst_ip": "10.0.0.5",
+                "dst_port": 22,
+                "alert_message": "Port scan detected",
+            },
+            {
+                "ts": 1767225630.0,
+                "message": "alert",
+                "alert_id": "a2",
+                "detector": "udp_flood",
+                "severity": "CRITICAL",
+                "src_ip": "203.0.113.10",
+                "dst_ip": "10.0.0.53",
+                "dst_port": 53,
+                "alert_message": "UDP flood: 300 pkt/s",
+            },
+        ]
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False, encoding="utf-8")
+        for record in records:
+            tmp.write(json.dumps(record) + "\n")
+        tmp.close()
+        self.addCleanup(lambda: Path(tmp.name).unlink(missing_ok=True))
+        return tmp.name
+
     def test_demo_api_status(self):
         try:
             from dashboard.app import create_app
@@ -101,6 +134,62 @@ class DashboardApiTests(unittest.TestCase):
         self.assertEqual(summary.status_code, 200)
         self.assertGreater(summary.get_json()["alerts_generated"], 0)
 
+    def test_api_requires_configured_key(self):
+        try:
+            from dashboard.app import create_app
+        except SystemExit:
+            self.skipTest("Flask is not installed")
+
+        app = create_app(demo=True, api_key="secret")
+        app.testing = True
+        auth = b64encode(b"viper:secret").decode("ascii")
+        with app.test_client() as client:
+            unauthorized = client.get("/api/status")
+            authorized = client.get("/api/status", headers={"Authorization": f"Basic {auth}"})
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(authorized.status_code, 200)
+
+    def test_alerts_sort_severity_by_rank(self):
+        try:
+            from dashboard.app import create_app
+        except SystemExit:
+            self.skipTest("Flask is not installed")
+
+        app = create_app(log_path=self._sample_log())
+        app.testing = True
+        with app.test_client() as client:
+            response = client.get("/api/alerts?sort=severity&order=desc")
+        self.assertEqual(response.status_code, 200)
+        severities = [item["severity"] for item in response.get_json()["alerts"]]
+        self.assertEqual(severities, ["CRITICAL", "HIGH"])
+
+    def test_settings_reject_log_path_outside_allowed_dir(self):
+        try:
+            from dashboard.app import create_app
+        except SystemExit:
+            self.skipTest("Flask is not installed")
+
+        log_path = self._sample_log()
+        outside = Path(log_path).resolve().parent.parent / "outside.log"
+        app = create_app(log_path=log_path)
+        app.testing = True
+        with app.test_client() as client:
+            response = client.patch("/api/settings", json={"log_file_path": str(outside)})
+        self.assertEqual(response.status_code, 400)
+
+    def test_settings_accept_cwd_relative_log_path_in_allowed_dir(self):
+        try:
+            from dashboard.app import create_app
+        except SystemExit:
+            self.skipTest("Flask is not installed")
+
+        app = create_app(log_path="logs/nids.log")
+        app.testing = True
+        with app.test_client() as client:
+            response = client.patch("/api/settings", json={"log_file_path": "logs/nids.log"})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["log_file_path"].endswith(str(Path("logs/nids.log"))))
+
 
 class DashboardConfigTests(unittest.TestCase):
     def test_dashboard_defaults_exist(self):
@@ -115,4 +204,3 @@ class DashboardConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

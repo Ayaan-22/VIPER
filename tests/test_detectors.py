@@ -13,6 +13,7 @@ from __future__ import annotations
 import time
 import threading
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
@@ -256,6 +257,51 @@ class TestAlertHandler(unittest.TestCase):
         h.dispatch(Alert(detector="t", severity=Severity.LOW, src_ip="1.1.1.1", message=""))
         h.clear_history()
         self.assertEqual(len(h.history), 0)
+
+    def test_severity_filter_accepts_lowercase(self):
+        h = self._make_handler(min_sev="high")
+        low_alert = Alert(detector="x", severity=Severity.LOW, src_ip="1.1.1.1", message="")
+        high_alert = Alert(detector="x", severity=Severity.HIGH, src_ip="1.1.1.1", message="")
+        h.dispatch(low_alert)
+        h.dispatch(high_alert)
+        self.assertNotIn(low_alert, h.history)
+        self.assertIn(high_alert, h.history)
+        h.shutdown()
+
+    def test_async_delivery_is_bounded(self):
+        h = AlertHandler({
+            "severity_filter": "LOW",
+            "console": {"enabled": False},
+            "email": {
+                "enabled": True,
+                "min_severity": "LOW",
+                "from_addr": "nids@example.test",
+                "to_addrs": ["ops@example.test"],
+                "smtp_host": "localhost",
+                "smtp_port": 25,
+                "username": "u",
+                "password": "p",
+            },
+            "webhook": {"enabled": False},
+            "max_delivery_workers": 1,
+            "max_delivery_queue": 0,
+        })
+        gate = threading.Event()
+        sent = []
+
+        def slow_email(alert, cfg):
+            sent.append(alert.alert_id)
+            gate.wait(1)
+
+        h._to_email = slow_email
+        first = Alert(detector="x", severity=Severity.LOW, src_ip="1.1.1.1", message="")
+        second = Alert(detector="x", severity=Severity.LOW, src_ip="1.1.1.2", message="")
+        h.dispatch(first)
+        h.dispatch(second)
+        time.sleep(0.1)
+        gate.set()
+        h.shutdown(wait=True)
+        self.assertEqual(sent, [first.alert_id])
 
 
 # ---------------------------------------------------------------------------
@@ -683,7 +729,86 @@ class TestConfigLoader(unittest.TestCase):
         finally:
             os.unlink(fname)
 
+    def test_set_updates_nested_config(self):
+        from src.utils.config_loader import load_config
+        cfg = load_config(path="/nonexistent/path.yaml")
+        cfg.set("logging", "level", value="DEBUG")
+        self.assertEqual(cfg.logging["level"], "DEBUG")
+
+    def test_invalid_severity_config_fails_clearly(self):
+        import tempfile, os, yaml
+        data = {"alerting": {"severity_filter": "medim"}}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(data, f)
+            fname = f.name
+        try:
+            from src.utils.config_loader import load_config
+            with self.assertRaisesRegex(ValueError, "alerting.severity_filter"):
+                load_config(fname)
+        finally:
+            os.unlink(fname)
+
+
+class TestReporter(unittest.TestCase):
+    def test_report_filenames_do_not_collide(self):
+        import tempfile
+        from src.reporting.reporter import Reporter
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reporter = Reporter(tmp)
+            reporter.generate([], save=True)
+            reporter.generate([], save=True)
+            reports = list(Path(tmp).glob("report_*.txt"))
+            json_reports = list(Path(tmp).glob("report_*.json"))
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(len(json_reports), 2)
+
+
+class TestPcapWriter(unittest.TestCase):
+    def test_cleanup_old_files_keeps_newest_captures(self):
+        import os
+        import tempfile
+        from src.capture.pcap_writer import RotatingPcapWriter
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for idx in range(3):
+                path = Path(tmp) / f"capture_20260101_00000{idx}.pcap"
+                path.write_bytes(b"pcap")
+                os.utime(path, (100 + idx, 100 + idx))
+                paths.append(path)
+
+            writer = RotatingPcapWriter(output_dir=tmp, max_files=2)
+            writer._cleanup_old_files()
+
+            self.assertFalse(paths[0].exists())
+            self.assertTrue(paths[1].exists())
+            self.assertTrue(paths[2].exists())
+
+
+class TestEngineWiring(unittest.TestCase):
+    def test_register_detectors_respects_enabled_config(self):
+        import tempfile
+        from src.core.engine import NIDSEngine
+        from src.utils.config_loader import load_config
+
+        cfg = load_config(path="/nonexistent/path.yaml")
+        for name in ("port_scan", "syn_flood", "udp_flood", "icmp_flood", "brute_force", "anomaly"):
+            cfg.set("detection", name, "enabled", value=False)
+        cfg.set("detection", "port_scan", "enabled", value=True)
+        cfg.set("capture", "enabled", value=False)
+        cfg.set("logging", "console", value=False)
+
+        with tempfile.TemporaryDirectory() as tmp, patch("src.core.engine.setup_logger"), patch.object(
+            NIDSEngine, "_resolve_interface", return_value="eth0"
+        ):
+            cfg.set("logging", "file", value=str(Path(tmp) / "nids.log"))
+            cfg.set("reporting", "report_dir", value=tmp)
+            engine = NIDSEngine(cfg)
+
+        self.assertEqual([det.name for det in engine.detectors], ["port_scan"])
+        self.assertIsNone(engine.pcap_writer)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-

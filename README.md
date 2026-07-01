@@ -1,7 +1,8 @@
-# 🛡 VIPER — Python Network Intrusion Detection System
+# VIPER Vision — Network Intrusion Detection and Visualization
 
-A production-ready, modular Network Intrusion Detection System built in Python.
-Detects port scans, volumetric floods, brute-force attacks, and statistical traffic anomalies in real time using sliding-window algorithms and structured alerting.
+VIPER Vision is a real-time Network Intrusion Detection and Visualization platform built in Python. It captures network traffic, detects port scans, floods, brute-force attempts, and statistical anomalies, then visualizes suspicious activity through a modern dashboard with alert timelines, protocol analytics, top talkers, suspicious connection grouping, PCAP exports, and professional reports.
+
+VIPER remains defensive and monitoring-focused. Use it only on networks where you have explicit permission to capture and analyze traffic.
 
 ---
 
@@ -28,18 +29,19 @@ Detects port scans, volumetric floods, brute-force attacks, and statistical traf
 
 ## Features
 
-| Category      | Capability                                                        |
-| ------------- | ----------------------------------------------------------------- |
+| Category | Capability |
+| --- | --- |
 | **Detection** | Port scan, SYN flood, UDP flood, ICMP flood, brute-force, anomaly |
-| **Windowing** | Thread-safe sliding-window counters — no stale state              |
-| **Severity**  | Dynamic severity escalation (LOW → CRITICAL) based on rate        |
-| **Alerting**  | Console (coloured), rotating JSON log, email, webhook             |
-| **Capture**   | Rotating PCAP export for offline forensics                        |
-| **Config**    | Single YAML file — no code changes needed to tune thresholds      |
-| **Dashboard** | Flask web UI with live alert feed and severity charts             |
-| **Reporting** | Text + JSON reports, Matplotlib bar/pie charts                    |
-| **Testing**   | Full pytest suite; no live interface needed                       |
-| **Docker**    | Single-command deployment with docker-compose                     |
+| **Windowing** | Thread-safe sliding-window counters — no stale state |
+| **Severity** | Dynamic severity escalation (LOW → CRITICAL) based on rate |
+| **Alerting** | Console (coloured), rotating JSON log, email, webhook |
+| **Capture** | Rotating PCAP export for offline forensics |
+| **Config** | Single YAML file — no code changes needed to tune thresholds |
+| **Dashboard** | VIPER Vision dashboard with overview, live alerts, protocol analytics, top talkers, port scans, suspicious connections, timeline, reports, captures, settings |
+| **Streaming** | SSE live updates plus optional WebSocket routes via `flask-sock` |
+| **Reporting** | Text + JSON reports, Matplotlib charts, VIPER Vision HTML reports |
+| **Testing** | Full pytest suite; no live interface needed |
+| **Docker** | Single-command deployment with docker-compose |
 
 ---
 
@@ -72,7 +74,29 @@ Detects port scans, volumetric floods, brute-force attacks, and statistical traf
           │ emit(Alert)
    ┌──────▼──────────────────────────────────────────────────┐
    │  AlertHandler  →  Console / File / Email / Webhook      │
-   └─────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────┘
+                         │ JSON logs
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│ VIPER Vision Dashboard API → SSE/WebSocket → UI Charts  │
+└─────────────────────────────────────────────────────────┘
+```
+
+```mermaid
+flowchart LR
+    A["Packet Capture"] --> B["Queue"]
+    B --> C["Packet Processor"]
+    C --> D["Detectors"]
+    D --> E["AlertHandler"]
+    E --> F["JSON Logs"]
+    A --> G["PCAP Writer"]
+    F --> H["Dashboard API"]
+    H --> I["SSE / WebSocket"]
+    I --> J["VIPER Vision UI Charts"]
+    F --> K["Historical Log Parser"]
+    K --> H
+    H --> L["HTML Report Generator"]
+    M["Demo Data Generator"] --> H
 ```
 
 **Key design principles:**
@@ -96,7 +120,18 @@ viper/
 ├── config/
 │   └── config.yaml              # ← edit this to tune the system
 ├── dashboard/
-│   └── app.py                   # Flask live dashboard
+│   ├── app.py                   # VIPER Vision Flask dashboard/API
+│   ├── api/
+│   │   └── models.py
+│   ├── services/
+│   │   ├── log_parser.py
+│   │   ├── metrics_service.py
+│   │   ├── timeline_service.py
+│   │   ├── suspicious_connection_service.py
+│   │   ├── demo_data.py
+│   │   └── report_service.py
+│   ├── static/
+│   └── templates/
 ├── src/
 │   ├── core/
 │   │   ├── engine.py            # Top-level orchestrator
@@ -144,9 +179,18 @@ cd viper
 
 # 2. Create a virtual environment (recommended)
 python -m venv .venv
+
+# On Linux / macOS (bash/zsh):
 source .venv/bin/activate
 
+# On Windows (PowerShell):
+.\.venv\Scripts\Activate.ps1
+
+# On Windows (Command Prompt):
+.\.venv\Scripts\activate.bat
+
 # 3. Install dependencies
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
@@ -199,8 +243,16 @@ The `main.py` script is the primary entry point for the VIPER NIDS Engine. It pr
 
 Before starting the monitor, you must determine which network interface to listen on.
 
+**On Linux / macOS:**
+
 ```bash
-# Works on both Windows and Linux to list all available interfaces
+# Scapy requires root privileges to list network interfaces on Linux
+sudo .venv/bin/python main.py --list-interfaces
+```
+
+**On Windows (Run terminal as Administrator):**
+
+```powershell
 python main.py --list-interfaces
 ```
 
@@ -211,41 +263,44 @@ python main.py --list-interfaces
 Use the `-i` (or `--interface`) flag to start live capture.
 
 **On Linux / macOS:**
+If you are running in a virtual environment, running `sudo python` uses the system Python. You must explicitly pass the path to the virtual environment's Python binary to keep the installed dependencies:
 
 ```bash
-sudo python main.py -i eth0
+sudo .venv/bin/python main.py -i eth0
 ```
 
 **On Windows (Run as Administrator):**
 
 ```powershell
+# In PowerShell:
 python main.py -i "Ethernet"
-# Alternatively, you can use the interface index:
+
+# Alternatively, use the interface index:
 python main.py -i 15
 ```
 
 ### 3. CLI Flags & Options Reference
 
-| Flag / Option         | Description                                                                        | Example Usage             |
-| --------------------- | ---------------------------------------------------------------------------------- | ------------------------- |
-| `-i`, `--interface`   | The network interface to capture traffic from. Overrides the config file.          | `-i eth0` or `-i "Wi-Fi"` |
-| `-c`, `--config`      | Path to a custom YAML configuration file. Defaults to `config/config.yaml`.        | `-c /etc/nids/prod.yaml`  |
-| `--log-level`         | Override the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).                | `--log-level DEBUG`       |
-| `--list-interfaces`   | List all available network interfaces on the host system and exit.                 | `--list-interfaces`       |
-| `--dry-run`           | Validates your config file and prints active detectors without starting a capture. | `--dry-run`               |
-| `--report-only`       | Do not capture traffic. Instead, parse an existing log file and generate a report. | `--report-only`           |
-| `--log`               | Specify the path to the log file to parse when using `--report-only`.              | `--log logs/nids.log`     |
-| `--no-color`          | Disables ANSI colour output in the terminal console.                               | `--no-color`              |
+| Flag / Option | Description | Example Usage |
+| --- | --- | --- |
+| `-i`, `--interface` | The network interface to capture traffic from. Overrides the config file. | `-i eth0` or `-i "Wi-Fi"` |
+| `-c`, `--config` | Path to a custom YAML configuration file. Defaults to `config/config.yaml`. | `-c /etc/nids/prod.yaml` |
+| `--log-level` | Override the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL). | `--log-level DEBUG` |
+| `--list-interfaces` | List all available network interfaces on the host system and exit. | `--list-interfaces` |
+| `--dry-run` | Validates your config file and prints active detectors without starting a capture. | `--dry-run` |
+| `--report-only` | Do not capture traffic. Instead, parse an existing log file and generate a report. | `--report-only` |
+| `--log` | Specify the path to the log file to parse when using `--report-only`. | `--log logs/nids.log` |
+| `--no-color` | Disables ANSI colour output in the terminal console. | `--no-color` |
 
 ### 4. Advanced Examples
 
 **Run with a custom configuration file and maximum verbosity:**
 
 ```bash
-# Linux
-sudo python main.py -i eth0 -c config/high_security.yaml --log-level DEBUG
+# Linux (using the venv Python)
+sudo .venv/bin/python main.py -i eth0 -c config/high_security.yaml --log-level DEBUG
 
-# Windows
+# Windows (Run as Administrator)
 python main.py -i "Wi-Fi" -c config/high_security.yaml --log-level DEBUG
 ```
 
@@ -294,14 +349,16 @@ Uses **Welford's online algorithm** to maintain a per-source running mean and st
 
 ## Alerting Channels
 
-| Channel           | Config key           | Notes                                |
-| ----------------- | -------------------- | ------------------------------------ |
-| Coloured console  | `alerting.console`   | Colour-coded by severity             |
-| Rotating JSON log | `logging.file`       | Structured, queryable with `jq`      |
-| Email (SMTP)      | `alerting.email`     | TLS, per-severity filter             |
-| HTTP Webhook      | `alerting.webhook`   | Slack / Teams / PagerDuty compatible |
+| Channel | Config key | Notes |
+| --- | --- | --- |
+| Coloured console | `alerting.console` | Colour-coded by severity |
+| Rotating JSON log | `logging.file` | Structured, queryable with `jq` |
+| Email (SMTP) | `alerting.email` | TLS, per-severity filter |
+| HTTP Webhook | `alerting.webhook` | Slack / Teams / PagerDuty compatible |
 
 **Query the log with `jq`:**
+
+**On Linux / macOS (bash/zsh) or Windows Git Bash:**
 
 ```bash
 # All CRITICAL alerts
@@ -311,29 +368,120 @@ jq 'select(.severity=="CRITICAL")' logs/nids.log
 jq -r '.src_ip' logs/nids.log | sort | uniq -c | sort -rn | head
 ```
 
+**On Windows (PowerShell):**
+
+```powershell
+# All CRITICAL alerts (note the escaped double quotes)
+jq "select(.severity==`"CRITICAL`")" logs/nids.log
+
+# Top offending IPs (native PowerShell)
+jq -r ".src_ip" logs/nids.log | Group-Object | Sort-Object Count -Descending | Select-Object -First 10 -ExpandProperty Name
+```
+
 ---
 
 ## Web Dashboard
 
-```bash
-# Start the dashboard (separate terminal)
-python dashboard/app.py --log logs/nids.log --port 5000
+VIPER Vision features a web-based intrusion visualization dashboard to monitor network traffic in real-time or replay historical logs. It supports two modes: **Live Monitoring Mode** and **Demo Mode**.
 
-# Open in browser
-open http://localhost:5000
-```
+### 1. Live Monitoring Mode
 
-The dashboard auto-refreshes every 5 seconds and shows:
+In this mode, the NIDS engine captures traffic and writes alerts in real-time to a JSON log file. The dashboard monitors this log file, streaming alerts and traffic metrics to the web UI using **Server-Sent Events (SSE)** or **WebSockets** (requires `flask-sock`).
 
-- Alert counters by severity
-- Live scrolling alert table
-- Detector breakdowns
+To run in Live Monitoring Mode, you need to open two terminal windows (both in the active virtual environment):
+
+#### Step A: Start the NIDS Sensor Engine
+
+Start the packet capture engine to sniff network traffic and generate logs.
+
+- **Linux / macOS:**
+
+  ```bash
+  sudo .venv/bin/python main.py -i eth0
+  ```
+
+- **Windows (Run terminal as Administrator):**
+
+  ```powershell
+  python main.py -i "Ethernet"
+  ```
+
+#### Step B: Start the VIPER Vision Dashboard
+
+Run the Flask dashboard web server.
+
+- **Option 1: Via the main CLI (Recommended)**
+
+  ```bash
+  python main.py --dashboard
+  ```
+
+- **Option 2: Running the dashboard app directly**
+
+  ```bash
+  python dashboard/app.py --log logs/nids.log --port 5000
+  ```
+
+### 2. Demo Mode
+
+If you want to explore the dashboard features without running packet capture or requiring elevated administrative/root privileges, you can run the dashboard in **Demo Mode**. This populates the UI with simulated, high-fidelity security events (such as port scans, floods, and brute-force attempts).
+
+- **Option 1: Via the main CLI**
+
+  ```bash
+  python main.py --dashboard-demo
+  ```
+
+- **Option 2: Running the dashboard app directly**
+
+  ```bash
+  python dashboard/app.py --demo
+  ```
+
+---
+
+### Dashboard Features & Capabilities
+
+Open **`http://localhost:5000`** in your browser to access the interface. The dashboard includes:
+
+- **Overview Panel**: Real-time traffic summary cards, alert statistics, engine status, and active system notifications.
+- **Live Alerts Feed**: Chronological list of triggered alerts with inline filters (by severity, detector, or protocol), search bar, pause/resume controls, and expandable details showing deep packet evidence.
+- **Packet Summary**: Dynamic graphs tracking packet capture status, processing queues, and drop rates.
+- **Top Talkers**: Interactive lists and charts of the most active source IPs, destination IPs, and targeted ports.
+- **Protocol Breakdown**: Visual charts showing traffic distribution across TCP, UDP, ICMP, and other protocols.
+- **Port Scan Visualizer**: Highlights probe origins, unique targeted ports count, and scanning activity timelines.
+- **Suspicious Connections**: Automatically groups related flows by source IP, destination IP, and detection profile.
+- **Attack Timeline**: Interactive timeline illustrating the progression and severity escalation of attacks.
+- **Reports & Captures Management**: View, download, or trigger new HTML reports and inspect captured `.pcap` files directly from the UI.
+- **Settings Control**: Adjust refresh intervals, log file paths, maximum alert display limits, and visual themes.
+
+---
+
+### Real-Time Update Channels
+
+The dashboard supports two channels for pushing live data updates to the client:
+
+1. **Server-Sent Events (SSE)** (Default): Built-in and works out-of-the-box using the `/api/stream/alerts` and `/api/stream/metrics` routes.
+2. **WebSockets** (Recommended for lower overhead): Triggered automatically if `flask-sock` is installed, utilizing `/ws/alerts` and `/ws/metrics` routes. If `flask-sock` is not available, the dashboard gracefully falls back to SSE.
 
 ---
 
 ## Reporting & Visualisation
 
 Reports are generated automatically every `reporting.auto_report_interval` seconds and on shutdown.
+VIPER Vision can also generate a polished HTML report from the dashboard:
+
+**On Linux / macOS or Windows CMD:**
+
+```bash
+curl -X POST http://localhost:5000/api/reports/generate
+```
+
+**On Windows (PowerShell):**
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:5000/api/reports/generate
+```
 
 ```text
 reports/
@@ -378,36 +526,45 @@ Tests cover: `SlidingWindow`, `SlidingWindowDict`, `Alert`/`Severity`, `AlertHan
 
 ## Docker Deployment
 
+> [!NOTE]
+> Modern Docker installations use `docker compose` without the hyphen. For older versions, replace `docker compose` with `docker-compose`.
+
 ```bash
-# Build and start everything (NIDS sensor + dashboard)
-docker-compose up -d
+# 1. Build the Docker images
+docker compose build
 
-# View live logs
-docker-compose logs -f nids
+# 2. Start all services (NIDS sensor + dashboard) in the background
+docker compose up -d
 
-# Capture on a different interface
-docker-compose run nids --interface ens3
+# 3. View live logs from the NIDS sensor
+docker compose logs -f nids
 
-# Stop
-docker-compose down
+# 4. Capture on a different interface
+docker compose run nids --interface ens3
+
+# 5. Run only the no-capture dashboard demo on http://localhost:5050
+docker compose --profile demo up dashboard-demo
+
+# 6. Stop and clean up containers
+docker compose down
 ```
 
-The container requires `--cap-add NET_ADMIN --cap-add NET_RAW` (handled automatically by `docker-compose.yml`).
+The sensor container requires `NET_ADMIN` and `NET_RAW` for Scapy packet capture. Host networking may be required for real capture visibility, especially on Linux; Docker Desktop on Windows/macOS has additional network capture limitations. The dashboard and demo services do not require raw socket privileges.
 
 ---
 
 ## Architecture Decisions
 
-| Decision                                | Rationale                                                                                                             |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Decision | Rationale |
+| --- | --- |
 | **Sliding windows over fixed counters** | Counters reset at arbitrary boundaries causing bursts to split across windows; sliding windows give a continuous view |
-| **Thread-pool + queue**                 | Decouples capture (must be fast) from detection (may be slow); bounded queue prevents OOM under extreme load          |
-| **Welford's algorithm**                 | Single-pass, O(1) per sample, numerically stable — no need for NumPy or keeping a full history buffer                 |
-| **Dependency injection**                | Detectors are completely testable without Scapy or a network interface                                                |
-| **YAML config + deep-merge**            | Users can supply a partial config; missing keys always fall back to safe defaults                                     |
-| **JSON structured logs**                | Machine-parseable; trivially ingested by ELK, Splunk, Grafana Loki, or `jq`                                           |
-| **Bounded memory management**           | Auto-eviction of IPs and bounded queues prevent Out Of Memory (OOM) crashes during sustained DDoS                     |
-| **Burst-resistant rate calculation**    | Sliding windows use full window duration instead of instantaneous elapsed time, ignoring OS packet buffer bursts      |
+| **Thread-pool + queue** | Decouples capture (must be fast) from detection (may be slow); bounded queue prevents OOM under extreme load |
+| **Welford's algorithm** | Single-pass, O(1) per sample, numerically stable — no need for NumPy or keeping a full history buffer |
+| **Dependency injection** | Detectors are completely testable without Scapy or a network interface |
+| **YAML config + deep-merge** | Users can supply a partial config; missing keys always fall back to safe defaults |
+| **JSON structured logs** | Machine-parseable; trivially ingested by ELK, Splunk, Grafana Loki, or `jq` |
+| **Bounded memory management** | Auto-eviction of IPs and bounded queues prevent Out Of Memory (OOM) crashes during sustained DDoS |
+| **Burst-resistant rate calculation** | Sliding windows use full window duration instead of instantaneous elapsed time, ignoring OS packet buffer bursts |
 
 ---
 
@@ -418,6 +575,23 @@ The container requires `--cap-add NET_ADMIN --cap-add NET_RAW` (handled automati
 - **eBPF integration** — use `bcc` or `pyshark` for kernel-space filtering to reduce Python-side overhead by 10×.
 - **Prometheus metrics** — expose packet rates and alert counts as a `/metrics` endpoint for Grafana dashboards.
 - **Alert deduplication** — group repeated alerts from the same source into a single aggregated event.
-- **Active response** — optionally call `iptables` / `nftables` to block confirmed attack sources.
 - **IPv6 support** — extend all detectors to handle IPv6 headers.
 - **Cluster mode** — distribute capture across multiple sensors and aggregate alerts centrally.
+
+---
+
+## Skills Demonstrated
+
+- Network intrusion detection
+- Packet analysis
+- Scapy-based traffic capture
+- Sliding-window detection algorithms
+- Real-time alerting
+- SSE/WebSocket dashboard streaming
+- Security dashboard development
+- Log analytics
+- Protocol breakdown
+- Attack timeline visualization
+- Python backend engineering
+- Docker deployment
+- Testing and documentation

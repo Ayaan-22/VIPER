@@ -78,7 +78,8 @@ class BaseDetector(ABC):
             message=message,
             metadata=metadata,
         )
-        self._alert_count += 1
+        with self._lock:
+            self._alert_count += 1
         self.handler.dispatch(alert)
 
     def is_whitelisted(self, ip: str) -> bool:

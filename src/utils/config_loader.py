@@ -60,6 +60,21 @@ _DEFAULTS: Dict[str, Any] = {
         "auto_report_interval": 300,
         "report_dir": "reports",
     },
+    "dashboard": {
+        "enabled": True,
+        "host": "127.0.0.1",
+        "port": 5000,
+        "refresh_interval_seconds": 5,
+        "max_live_alerts": 500,
+        "timeline_window_minutes": 60,
+        "enable_websocket": True,
+        "log_file_path": "logs/nids.log",
+    },
+    "analytics": {
+        "top_talkers_limit": 10,
+        "protocol_window_seconds": 60,
+        "suspicious_group_window_seconds": 120,
+    },
     "performance": {
         "worker_threads": 4,
         "queue_maxsize": 10_000,

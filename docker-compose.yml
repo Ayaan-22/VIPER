@@ -63,7 +63,7 @@ services:
       - PYTHONUNBUFFERED=1
     
     entrypoint: ["python", "dashboard/app.py"]
-    command: ["--log", "/app/logs/nids.log", "--host", "0.0.0.0", "--port", "5000"]
+    command: ["--log", "/app/logs/nids.log", "--host", "0.0.0.0", "--port", "5000", "--captures", "/app/captures", "--reports", "/app/reports"]
     
     # Healthcheck to verify dashboard is reachable
     healthcheck:
@@ -77,3 +77,16 @@ services:
       options:
         max-size: "10mb"
         max-file: "3"
+
+  # ─── Dashboard Demo (No Packet Capture Required) ───────────────────────────
+  dashboard-demo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: viper-vision-demo
+    image: viper-dashboard:latest
+    profiles: ["demo"]
+    ports:
+      - "5050:5000"
+    entrypoint: ["python", "dashboard/app.py"]
+    command: ["--demo", "--host", "0.0.0.0", "--port", "5000"]

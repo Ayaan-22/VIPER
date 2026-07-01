@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VIPER Vision</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='vision.css') }}">
+</head>
+<body data-demo="{{ 'true' if demo else 'false' }}">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">V</div>
+      <div>
+        <strong>VIPER Vision</strong>
+        <span>Network Intrusion Visualizer</span>
+      </div>
+    </div>
+    <nav>
+      <a href="/" data-route="/">Overview</a>
+      <a href="/alerts" data-route="/alerts">Live Alerts</a>
+      <a href="/packets" data-route="/packets">Packet Summary</a>
+      <a href="/talkers" data-route="/talkers">Top Talkers</a>
+      <a href="/protocols" data-route="/protocols">Protocols</a>
+      <a href="/port-scans" data-route="/port-scans">Port Scans</a>
+      <a href="/connections" data-route="/connections">Suspicious Connections</a>
+      <a href="/timeline" data-route="/timeline">Attack Timeline</a>
+      <a href="/reports" data-route="/reports">Reports</a>
+      <a href="/captures" data-route="/captures">PCAP Captures</a>
+      <a href="/settings" data-route="/settings">Settings</a>
+      <a href="/about" data-route="/about">About VIPER</a>
+    </nav>
+  </aside>
+
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow" id="modeLabel">Historical mode</p>
+        <h1 id="pageTitle">Dashboard Overview</h1>
+      </div>
+      <div class="status-strip">
+        <span class="status-pill" id="engineStatus">Loading</span>
+        <span id="clock"></span>
+      </div>
+    </header>
+
+    <section id="toast" class="toast" hidden></section>
+    <section id="view" class="view"></section>
+  </main>
+
+  <script src="{{ url_for('static', filename='vision.js') }}"></script>
+</body>
+</html>
+

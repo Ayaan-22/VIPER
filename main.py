@@ -95,9 +95,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Parse an existing log file and generate a report, then exit.",
     )
     parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Run the VIPER Vision dashboard against a live or historical JSON log.",
+    )
+    parser.add_argument(
+        "--dashboard-demo",
+        action="store_true",
+        help="Run VIPER Vision with simulated demo data.",
+    )
+    parser.add_argument(
+        "--dashboard-host",
+        default=None,
+        help="Dashboard bind host (default from config or 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=None,
+        help="Dashboard port (default from config or 5000).",
+    )
+    parser.add_argument(
         "--log",
         metavar="FILE",
-        help="Log file path (used with --report-only).",
+        help="Log file path (used with --report-only or --dashboard).",
     )
 
     # Output format
@@ -170,6 +191,25 @@ def main() -> None:
         _report_from_log(args.log or cfg.logging.get("file", "logs/nids.log"), cfg)
         sys.exit(0)
 
+    # VIPER Vision dashboard modes
+    if args.dashboard or args.dashboard_demo:
+        from dashboard.app import create_app
+
+        dashboard_cfg = cfg.raw().get("dashboard", {})
+        app = create_app(
+            log_path=args.log or dashboard_cfg.get("log_file_path") or cfg.logging.get("file", "logs/nids.log"),
+            demo=args.dashboard_demo,
+            captures_dir=cfg.capture.get("output_dir", "captures"),
+            reports_dir=cfg.reporting.get("report_dir", "reports"),
+            interface=args.interface or cfg.network.get("interface", "log replay"),
+        )
+        host = args.dashboard_host or dashboard_cfg.get("host", "127.0.0.1")
+        port = args.dashboard_port or dashboard_cfg.get("port", 5000)
+        mode = "demo mode" if args.dashboard_demo else "historical/live log mode"
+        print(f"[*] VIPER Vision running at http://{host}:{port} ({mode})")
+        app.run(host=host, port=port, debug=False, threaded=True)
+        sys.exit(0)
+
     # Normal capture mode
     if not args.interface and not cfg.network.get("interface"):
         parser.error("Specify a network interface with -i / --interface")
@@ -203,7 +243,7 @@ def _report_from_log(log_path: str, cfg) -> None:
                     detector=obj.get("detector", "unknown"),
                     severity=Severity[obj.get("severity", "LOW")],
                     src_ip=obj.get("src_ip", ""),
-                    message=obj.get("message", ""),
+                    message=obj.get("alert_message", ""),
                 )
                 alerts.append(a)
             except Exception:

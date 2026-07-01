@@ -93,13 +93,17 @@ class AnomalyDetector(BaseDetector):
         self._min_samples: int = cfg.get("min_samples", 20)
         self._baseline_window: float = cfg.get("baseline_window_seconds", 60)
         self._profiles: Dict[str, _SourceProfile] = defaultdict(_SourceProfile)
+        self._profiles_lock = threading.Lock()   # guards dict-level mutation
         self._throttle = SlidingWindowDict(10)   # alert at most once per 10 s per src
         
         self._cleanup_interval: float = 60.0
         self._last_cleanup: float = time.monotonic()
 
     def _maybe_cleanup(self, now: float) -> None:
-        """Evict stale profiles to prevent memory leaks from inactive or spoofed IPs."""
+        """Evict stale profiles to prevent memory leaks from inactive or spoofed IPs.
+
+        Must be called while holding ``self._profiles_lock``.
+        """
         self._last_cleanup = now
         # Evict if inactive for 2x the baseline window (min 60s)
         stale_threshold = now - max(self._baseline_window * 2, 60.0)
@@ -115,9 +119,7 @@ class AnomalyDetector(BaseDetector):
             return
             
         now = time.monotonic()
-        if now - self._last_cleanup > self._cleanup_interval:
-            self._maybe_cleanup(now)
-            
+
         if not packet.haslayer(IP):
             return
 
@@ -128,7 +130,12 @@ class AnomalyDetector(BaseDetector):
         pkt_len = len(packet)
         now = time.monotonic()
 
-        profile = self._profiles[src_ip]
+        # Acquire dict-level lock for profile lookup/creation and cleanup
+        with self._profiles_lock:
+            if now - self._last_cleanup > self._cleanup_interval:
+                self._maybe_cleanup(now)
+            profile = self._profiles[src_ip]
+
         with profile.lock:
             # Update inter-arrival time
             iat = now - profile.last_ts
@@ -136,34 +143,31 @@ class AnomalyDetector(BaseDetector):
 
             # Update stats
             profile.size_stats.update(pkt_len)
-            if profile.iat_stats.n > 0:         # skip the very first packet
-                profile.iat_stats.update(iat)
-            else:
-                profile.iat_stats.update(iat)   # seed with first IAT
+            profile.iat_stats.update(iat)
 
             n = profile.size_stats.n
 
-        # --- still in baseline phase ---
-        if n < self._min_samples:
-            return
+            # --- still in baseline phase ---
+            if n < self._min_samples:
+                return
 
-        # --- check for anomalies ---
-        anomalies = []
+            # --- check for anomalies (inside lock for consistency) ---
+            anomalies: List[str] = []
 
-        size_z = profile.size_stats.z_score(pkt_len)
-        if size_z > self._deviation_factor:
-            anomalies.append(
-                f"pkt_size={pkt_len}B (mean={profile.size_stats.mean:.0f}, "
-                f"z={size_z:.1f})"
-            )
+            size_z = profile.size_stats.z_score(pkt_len)
+            if size_z > self._deviation_factor:
+                anomalies.append(
+                    f"pkt_size={pkt_len}B (mean={profile.size_stats.mean:.0f}, "
+                    f"z={size_z:.1f})"
+                )
 
-        iat_z = profile.iat_stats.z_score(iat)
-        if iat_z > self._deviation_factor and iat < 0.001:
-            # Very fast arrival (possible burst) is more interesting than slow
-            anomalies.append(
-                f"iat={iat*1000:.2f}ms (mean={profile.iat_stats.mean*1000:.2f}ms, "
-                f"z={iat_z:.1f})"
-            )
+            iat_z = profile.iat_stats.z_score(iat)
+            if iat_z > self._deviation_factor and iat < 0.001:
+                # Very fast arrival (possible burst) is more interesting than slow
+                anomalies.append(
+                    f"iat={iat*1000:.2f}ms (mean={profile.iat_stats.mean*1000:.2f}ms, "
+                    f"z={iat_z:.1f})"
+                )
 
         if anomalies and self._throttle.count(src_ip) == 0:
             self._throttle.add(src_ip)
@@ -174,3 +178,4 @@ class AnomalyDetector(BaseDetector):
                 anomalies=anomalies,
                 samples=n,
             )
+

@@ -12,7 +12,16 @@ import time
 import uuid
 from dataclasses import dataclass, field, asdict
 from enum import Enum
+from functools import total_ordering
 from typing import Any, Dict, Optional
+
+
+# Canonical ordering: LOW=0, MEDIUM=1, HIGH=2, CRITICAL=3.
+# Defined at module level so both the Severity operators and the
+# standalone severity_gte() helper can reference it.
+_SEVERITY_ORDER: Dict[str, int] = {
+    "LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3,
+}
 
 
 class Severity(str, Enum):
@@ -21,28 +30,30 @@ class Severity(str, Enum):
     HIGH = "HIGH"
     CRITICAL = "CRITICAL"
 
-    # Ordering for comparison (LOW < MEDIUM < HIGH < CRITICAL)
-    _ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}  # type: ignore[assignment]
+    def __lt__(self, other: str) -> bool:
+        if other not in _SEVERITY_ORDER:
+            return NotImplemented
+        return _SEVERITY_ORDER[self] < _SEVERITY_ORDER[other]
 
-    def __lt__(self, other: "Severity") -> bool:
-        return self._ORDER.value[self.value] < self._ORDER.value[other.value]  # type: ignore[attr-defined]
+    def __le__(self, other: str) -> bool:
+        if other not in _SEVERITY_ORDER:
+            return NotImplemented
+        return _SEVERITY_ORDER[self] <= _SEVERITY_ORDER[other]
 
-    def __le__(self, other: "Severity") -> bool:
-        return self == other or self < other
+    def __gt__(self, other: str) -> bool:
+        if other not in _SEVERITY_ORDER:
+            return NotImplemented
+        return _SEVERITY_ORDER[self] > _SEVERITY_ORDER[other]
 
-    def __gt__(self, other: "Severity") -> bool:
-        return not self <= other
-
-    def __ge__(self, other: "Severity") -> bool:
-        return not self < other
-
-
-_SEVERITY_ORDER = {s: i for i, s in enumerate(Severity)}
+    def __ge__(self, other: str) -> bool:
+        if other not in _SEVERITY_ORDER:
+            return NotImplemented
+        return _SEVERITY_ORDER[self] >= _SEVERITY_ORDER[other]
 
 
 def severity_gte(a: Severity, b: Severity) -> bool:
     """Return True if severity *a* is greater-than-or-equal to *b*."""
-    return _SEVERITY_ORDER[a] >= _SEVERITY_ORDER[b]
+    return _SEVERITY_ORDER[a.value] >= _SEVERITY_ORDER[b.value]
 
 
 @dataclass

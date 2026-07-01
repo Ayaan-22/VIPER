@@ -8,6 +8,7 @@ numpy>=1.24.0         # Required by matplotlib + anomaly math (optional but reco
 
 # ─── Optional Dashboard ──────────────────────────────────────────────────────
 flask>=3.0.0          # Web dashboard (dashboard/app.py) – install only if needed
+flask-sock>=0.7.0     # Optional WebSocket routes for VIPER Vision live updates
 
 # ─── Testing ─────────────────────────────────────────────────────────────────
 pytest>=7.4.0

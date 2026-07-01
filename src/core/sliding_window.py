@@ -55,9 +55,14 @@ class SlidingWindow:
             self._prune(now)
             if not self._events:
                 return 0.0
-            # Use the window_seconds for the time denominator instead of instantaneous 
-            # elapsed time to prevent extreme rate spikes from OS packet buffering bursts.
-            return len(self._events) / max(self.window_seconds, 1e-9)
+            # Use the smaller of the configured window or the actual elapsed
+            # time since the first event.  This prevents both:
+            #   - extreme spikes from OS buffering bursts (capped by window), and
+            #   - overstated rates when the window has only been partially filled
+            #     (e.g. 100 packets in 50ms counted against a 1s window).
+            elapsed = now - self._events[0][0]
+            denominator = min(self.window_seconds, elapsed) if elapsed > 0 else self.window_seconds
+            return len(self._events) / max(denominator, 1e-9)
 
     def unique_values(self) -> set:
         """Return the set of distinct values seen in the current window."""

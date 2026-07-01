@@ -40,6 +40,7 @@ class JsonFormatter(logging.Formatter):
         "module", "msecs", "message", "msg", "name", "pathname",
         "process", "processName", "relativeCreated", "stack_info",
         "thread", "threadName",
+        "taskName",             # CPython 3.12+ asyncio task-name tracking
     })
 
     def format(self, record: logging.LogRecord) -> str:

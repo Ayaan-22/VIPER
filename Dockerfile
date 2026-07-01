@@ -7,7 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install build dependencies
+# Disable apt repository expiry checks to work around clock-skew in
+# containerised build environments.  Remove this if clock sync is reliable.
 RUN echo "Acquire::Check-Valid-Until \"false\";\nAcquire::Check-Date \"false\";" > /etc/apt/apt.conf.d/10no-check-valid-until \
     && apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -24,7 +25,7 @@ FROM python:3.11-slim-bookworm AS runner
 
 # Metadata
 LABEL maintainer="Ayaan-22"
-LABEL description="VIPER – Production Network Intrusion Detection System"
+LABEL description="VIPER Vision – Network Intrusion Detection and Visualization Platform"
 
 # Environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -38,6 +39,7 @@ WORKDIR /app
 # - iproute2: networking tools
 # - tcpdump: packet analysis
 # - procps: process monitoring for healthchecks
+# Disable apt repository expiry checks (clock-skew workaround, see builder stage).
 RUN echo "Acquire::Check-Valid-Until \"false\";\nAcquire::Check-Date \"false\";" > /etc/apt/apt.conf.d/10no-check-valid-until \
     && apt-get update && apt-get install -y --no-install-recommends \
     libpcap0.8 \
@@ -59,7 +61,7 @@ RUN mkdir -p logs reports captures
 RUN useradd -m -s /bin/bash viperuser && \
     chown -R viperuser:viperuser /app
 
-# EXPOSE Dashboard port
+# Expose VIPER Vision dashboard port
 EXPOSE 5000
 
 # Healthcheck to ensure the main process is running

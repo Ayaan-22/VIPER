@@ -39,7 +39,8 @@ log = get_logger("engine")
 class NIDSEngine:
     def __init__(self, config: Config, interface: Optional[str] = None):
         self.cfg = config
-        self.interface = interface or config.network.get("interface", "eth0")
+        raw_iface = interface or config.network.get("interface", "eth0")
+        self.interface = self._resolve_interface(raw_iface)
         self._running = False
 
         # Logging
@@ -151,6 +152,45 @@ class NIDSEngine:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_interface(iface_hint: str):
+        """Resolve a user-provided interface hint (index, name, or partial
+        name) into a scapy-compatible interface object.
+
+        Scapy's ``sniff()`` does not accept a raw Windows interface index
+        (e.g. ``"16"``).  This helper looks up the correct
+        ``NetworkInterface`` from scapy's ``IFACES`` registry so the caller
+        can pass the result directly to ``sniff(iface=...)``.
+        """
+        try:
+            from scapy.interfaces import IFACES, resolve_iface
+            # 1. Try scapy's own resolver first (handles names / GUIDs)
+            try:
+                return resolve_iface(iface_hint)
+            except ValueError:
+                pass
+
+            # 2. If the hint looks numeric, match by interface index
+            if iface_hint.isdigit():
+                idx = int(iface_hint)
+                for iface in IFACES.values():
+                    if getattr(iface, "index", None) == idx:
+                        return iface
+
+            # 3. Partial / case-insensitive name match
+            hint_lower = iface_hint.lower()
+            for iface in IFACES.values():
+                iface_name = getattr(iface, "name", "") or ""
+                iface_desc = getattr(iface, "description", "") or ""
+                if hint_lower in iface_name.lower() or hint_lower in iface_desc.lower():
+                    return iface
+
+        except ImportError:
+            pass  # scapy not available; fall through and return raw string
+
+        # Fallback: return the original string and let scapy raise later
+        return iface_hint
 
     def _register_detectors(self, det_cfg: dict) -> None:
         mapping = {

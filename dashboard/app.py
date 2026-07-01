@@ -1,171 +1,359 @@
 """
 dashboard/app.py
 ----------------
-Optional lightweight Flask dashboard.
-Run separately from the NIDS engine and point it at the JSON log file.
+VIPER Vision dashboard for live log replay, historical analysis, and demo mode.
 
 Usage:
     python dashboard/app.py --log logs/nids.log --port 5000
-
-Then open http://localhost:5000 in a browser.
+    python dashboard/app.py --demo
 """
 
 from __future__ import annotations
 
+import argparse
 import json
-import os
 import sys
 import time
-from collections import Counter, deque
 from pathlib import Path
+from typing import Any, Dict, Tuple
 
-# ---------------------------------------------------------------------------
-# Guard: only import Flask when the dashboard is actually used
-# ---------------------------------------------------------------------------
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 try:
-    from flask import Flask, jsonify, render_template_string
+    from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 except ImportError:
     print("Flask is not installed. Run: pip install flask", file=sys.stderr)
     sys.exit(1)
 
-app = Flask(__name__)
+try:
+    from flask_sock import Sock
+except ImportError:  # WebSockets are optional; SSE still works without this.
+    Sock = None
 
-# In-memory alert store (populated by tailing the log file)
-_alerts: deque = deque(maxlen=500)
-_seen_alert_ids: set = set()
-_log_path: str = "logs/nids.log"
+from dashboard.services.demo_data import build_demo_dataset
+from dashboard.services.log_parser import parse_log
+from dashboard.services.metrics_service import build_metrics, to_plain
+from dashboard.services.report_service import generate_html_report
+from dashboard.services.suspicious_connection_service import group_suspicious_connections
+from dashboard.services.timeline_service import build_timeline, extract_port_scans
 
-# ---------------------------------------------------------------------------
-# HTML template (single-file SPA, no external CDN dependency required)
-# ---------------------------------------------------------------------------
-_HTML = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>VIPER Dashboard</title>
-<style>
-  :root{--bg:#0f1117;--card:#1a1d2e;--accent:#e74c3c;--ok:#2ecc71;--warn:#f39c12;--info:#3498db;--txt:#ecf0f1;--sub:#95a5a6}
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',Roboto,monospace;font-size:14px}
-  header{display:flex;align-items:center;padding:1rem 2rem;background:var(--card);border-bottom:2px solid var(--accent)}
-  header h1{font-size:1.3rem;letter-spacing:.05em}header span{margin-left:.5rem;font-size:.8rem;color:var(--sub)}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;padding:1.5rem 2rem}
-  .card{background:var(--card);border-radius:8px;padding:1.2rem;border-left:4px solid var(--accent)}
-  .card.ok{border-color:var(--ok)} .card.warn{border-color:var(--warn)} .card.info{border-color:var(--info)}
-  .card h3{font-size:.75rem;color:var(--sub);text-transform:uppercase;letter-spacing:.08em}
-  .card .val{font-size:2rem;font-weight:700;margin-top:.25rem}
-  table{width:calc(100% - 4rem);margin:0 2rem 2rem;border-collapse:collapse}
-  th{text-align:left;padding:.5rem 1rem;background:var(--card);font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--sub)}
-  td{padding:.5rem 1rem;border-bottom:1px solid #1e2135;font-size:.82rem}
-  tr:hover td{background:#1e2135}
-  .CRITICAL{color:#c0392b;font-weight:bold} .HIGH{color:#e74c3c} .MEDIUM{color:#f39c12} .LOW{color:#27ae60}
-  #refresh{display:block;text-align:right;padding:.5rem 2rem;color:var(--sub);font-size:.75rem}
-</style>
-</head>
-<body>
-<header>
-  <h1>🛡 VIPER Dashboard</h1>
-  <span id="ts">—</span>
-</header>
-<div class="grid" id="stats"></div>
-<span id="refresh"></span>
-<table>
-  <thead><tr><th>Time</th><th>Severity</th><th>Detector</th><th>Source IP</th><th>Message</th></tr></thead>
-  <tbody id="alerts"></tbody>
-</table>
-<script>
-async function refresh(){
-  const r=await fetch('/api/alerts');
-  const d=await r.json();
-  document.getElementById('ts').textContent=new Date().toLocaleTimeString();
-  // Stats cards
-  const sc=document.getElementById('stats');
-  sc.innerHTML='';
-  const cards=[
-    {label:'Total Alerts',val:d.total,cls:''},
-    {label:'Critical',val:d.by_severity.CRITICAL||0,cls:''},
-    {label:'High',val:d.by_severity.HIGH||0,cls:'warn'},
-    {label:'Medium',val:d.by_severity.MEDIUM||0,cls:'info'},
-    {label:'Low',val:d.by_severity.LOW||0,cls:'ok'},
-  ];
-  cards.forEach(c=>{
-    sc.innerHTML+=`<div class="card ${c.cls}"><h3>${c.label}</h3><div class="val">${c.val}</div></div>`;
-  });
-  // Alert table
-  const tb=document.getElementById('alerts');
-  tb.innerHTML='';
-  d.alerts.slice().reverse().forEach(a=>{
-    const ts=new Date(a.ts*1000).toLocaleTimeString();
-    tb.innerHTML+=`<tr><td>${ts}</td><td class="${a.severity}">${a.severity}</td><td>${a.detector}</td><td>${a.src_ip}</td><td>${a.message}</td></tr>`;
-  });
-  document.getElementById('refresh').textContent='Auto-refresh in 5s | '+d.total+' alerts total';
+
+DEFAULT_SETTINGS = {
+    "refresh_interval_seconds": 5,
+    "max_alerts_displayed": 500,
+    "default_time_range_minutes": 60,
+    "severity_filters": ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+    "chart_window_size": 60,
+    "log_file_path": "logs/nids.log",
+    "theme": "dark",
 }
-refresh();setInterval(refresh,5000);
-</script>
-</body>
-</html>
-"""
 
 
-# ---------------------------------------------------------------------------
-# Log tail helper
-# ---------------------------------------------------------------------------
+def create_app(
+    *,
+    log_path: str = "logs/nids.log",
+    demo: bool = False,
+    captures_dir: str = "captures",
+    reports_dir: str = "reports",
+    interface: str = "log replay",
+) -> Flask:
+    app = Flask(__name__, template_folder="templates", static_folder="static")
+    app.config.update(
+        VIPER_LOG_PATH=log_path,
+        VIPER_DEMO=demo,
+        VIPER_CAPTURES_DIR=captures_dir,
+        VIPER_REPORTS_DIR=reports_dir,
+        VIPER_INTERFACE=interface,
+    )
+    app.viper_settings = dict(DEFAULT_SETTINGS)
+    app.viper_settings["log_file_path"] = log_path
 
-def _tail_log(path: str, n: int = 200):
-    """Read and parse the last n JSON log lines that contain alert data."""
-    p = Path(path)
-    if not p.exists():
-        return
-    with p.open("r", encoding="utf-8", errors="replace") as fh:
-        lines = fh.readlines()[-n:]
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if "alert_id" in obj:
-            aid = obj["alert_id"]
-            if aid not in _seen_alert_ids:
-                _seen_alert_ids.add(aid)
-                _alerts.append(obj)
+    sock = Sock(app) if Sock else None
+
+    def load_dataset() -> Tuple[list, list]:
+        if app.config["VIPER_DEMO"]:
+            return build_demo_dataset()
+        return parse_log(app.config["VIPER_LOG_PATH"])
+
+    def metrics_payload() -> Dict[str, Any]:
+        alerts, packet_stats = load_dataset()
+        mode = "demo" if app.config["VIPER_DEMO"] else "historical"
+        metrics = build_metrics(
+            alerts,
+            packet_stats,
+            interface="VIPER demo lab" if app.config["VIPER_DEMO"] else app.config["VIPER_INTERFACE"],
+            engine_status=mode,
+            top_limit=10,
+        )
+        return to_plain(metrics)
+
+    @app.route("/")
+    @app.route("/alerts")
+    @app.route("/packets")
+    @app.route("/talkers")
+    @app.route("/protocols")
+    @app.route("/port-scans")
+    @app.route("/connections")
+    @app.route("/timeline")
+    @app.route("/reports")
+    @app.route("/captures")
+    @app.route("/settings")
+    @app.route("/about")
+    def index():
+        return render_template("index.html", demo=app.config["VIPER_DEMO"])
+
+    @app.get("/api/status")
+    def api_status():
+        alerts, packet_stats = load_dataset()
+        mode = "demo" if app.config["VIPER_DEMO"] else "historical"
+        summary = build_metrics(alerts, packet_stats, engine_status=mode).summary
+        return jsonify(
+            {
+                "name": "VIPER Vision",
+                "mode": mode,
+                "demo": app.config["VIPER_DEMO"],
+                "log_path": app.config["VIPER_LOG_PATH"],
+                "alerts_loaded": len(alerts),
+                "packet_stat_records": len(packet_stats),
+                "engine_status": summary.engine_status,
+                "generated_at": time.time(),
+            }
+        )
+
+    @app.get("/api/metrics/summary")
+    def api_summary():
+        return jsonify(metrics_payload()["summary"])
+
+    @app.get("/api/alerts")
+    def api_alerts():
+        alerts, _ = load_dataset()
+        filtered = _filter_alerts(alerts, request.args)
+        limit = int(request.args.get("limit", app.viper_settings["max_alerts_displayed"]))
+        sort = request.args.get("sort", "timestamp")
+        reverse = request.args.get("order", "desc") == "desc"
+        if sort in {"timestamp", "severity", "detector", "src_ip", "dst_ip", "protocol"}:
+            filtered.sort(key=lambda a: getattr(a, sort) or "", reverse=reverse)
+        return jsonify({"total": len(filtered), "alerts": [a.to_dict() for a in filtered[:limit]]})
+
+    @app.get("/api/alerts/recent")
+    def api_recent_alerts():
+        alerts, _ = load_dataset()
+        limit = int(request.args.get("limit", 25))
+        return jsonify([a.to_dict() for a in alerts[-limit:]])
+
+    @app.get("/api/alerts/severity")
+    def api_alerts_severity():
+        return jsonify(metrics_payload()["alerts_by_severity"])
+
+    @app.get("/api/analytics/top-sources")
+    def api_top_sources():
+        return jsonify(metrics_payload()["top_sources"])
+
+    @app.get("/api/analytics/top-destinations")
+    def api_top_destinations():
+        return jsonify(metrics_payload()["top_destinations"])
+
+    @app.get("/api/analytics/top-ports")
+    def api_top_ports():
+        return jsonify(metrics_payload()["top_ports"])
+
+    @app.get("/api/analytics/protocols")
+    def api_protocols():
+        return jsonify(metrics_payload()["protocols"])
+
+    @app.get("/api/analytics/timeline")
+    def api_timeline():
+        alerts, _ = load_dataset()
+        return jsonify(to_plain(build_timeline(_filter_alerts(alerts, request.args))))
+
+    @app.get("/api/analytics/port-scans")
+    def api_port_scans():
+        alerts, _ = load_dataset()
+        threshold = int(request.args.get("threshold", 15))
+        return jsonify(to_plain(extract_port_scans(alerts, detection_threshold=threshold)))
+
+    @app.get("/api/analytics/suspicious-connections")
+    def api_suspicious_connections():
+        alerts, _ = load_dataset()
+        window = int(request.args.get("window", 120))
+        return jsonify(to_plain(group_suspicious_connections(alerts, window_seconds=window)))
+
+    @app.get("/api/reports")
+    def api_reports():
+        return jsonify(_list_files(app.config["VIPER_REPORTS_DIR"], ("*.txt", "*.json", "*.png", "*.html", "*.pdf")))
+
+    @app.post("/api/reports/generate")
+    def api_generate_report():
+        alerts, packet_stats = load_dataset()
+        path = generate_html_report(
+            alerts,
+            packet_stats,
+            output_dir=app.config["VIPER_REPORTS_DIR"],
+            mode="demo" if app.config["VIPER_DEMO"] else "historical",
+        )
+        return jsonify({"status": "generated", "path": path})
+
+    @app.get("/api/captures")
+    def api_captures():
+        return jsonify(_list_files(app.config["VIPER_CAPTURES_DIR"], ("*.pcap", "*.pcapng", "*.cap")))
+
+    @app.get("/api/settings")
+    def api_get_settings():
+        return jsonify(app.viper_settings)
+
+    @app.patch("/api/settings")
+    def api_patch_settings():
+        updates = request.get_json(silent=True) or {}
+        allowed = set(DEFAULT_SETTINGS)
+        for key, value in updates.items():
+            if key not in allowed:
+                return jsonify({"error": f"Unsupported setting: {key}"}), 400
+            if key in {"refresh_interval_seconds", "max_alerts_displayed", "default_time_range_minutes", "chart_window_size"}:
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    return jsonify({"error": f"{key} must be an integer"}), 400
+                if value <= 0:
+                    return jsonify({"error": f"{key} must be positive"}), 400
+            if key == "severity_filters":
+                valid = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+                value = [str(item).upper() for item in value if str(item).upper() in valid]
+            app.viper_settings[key] = value
+            if key == "log_file_path":
+                app.config["VIPER_LOG_PATH"] = str(value)
+        return jsonify(app.viper_settings)
+
+    @app.get("/api/stream/alerts")
+    def stream_alerts():
+        return Response(_sse_alert_stream(load_dataset), mimetype="text/event-stream")
+
+    @app.get("/api/stream/metrics")
+    def stream_metrics():
+        return Response(_sse_metrics_stream(metrics_payload), mimetype="text/event-stream")
+
+    if sock:
+        @sock.route("/ws/alerts")
+        def ws_alerts(ws):
+            last_count = -1
+            while True:
+                alerts, _ = load_dataset()
+                if len(alerts) != last_count:
+                    ws.send(json.dumps([a.to_dict() for a in alerts[-25:]], default=str))
+                    last_count = len(alerts)
+                time.sleep(app.viper_settings["refresh_interval_seconds"])
+
+        @sock.route("/ws/metrics")
+        def ws_metrics(ws):
+            while True:
+                ws.send(json.dumps(metrics_payload(), default=str))
+                time.sleep(app.viper_settings["refresh_interval_seconds"])
+    else:
+        @app.get("/ws/alerts")
+        @app.get("/ws/metrics")
+        def ws_unavailable():
+            return jsonify({"error": "Install flask-sock to enable WebSocket routes; SSE endpoints are available."}), 426
+
+    @app.get("/reports/<path:filename>")
+    def download_report(filename: str):
+        return send_from_directory(app.config["VIPER_REPORTS_DIR"], filename, as_attachment=False)
+
+    return app
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
+def _filter_alerts(alerts, args):
+    results = list(alerts)
+    severity = args.get("severity")
+    detector = args.get("detector")
+    src_ip = args.get("src_ip")
+    dst_ip = args.get("dst_ip")
+    protocol = args.get("protocol")
+    query = (args.get("q") or "").lower()
+    if severity:
+        allowed = {item.strip().upper() for item in severity.split(",")}
+        results = [a for a in results if a.severity in allowed]
+    if detector:
+        results = [a for a in results if a.detector == detector]
+    if src_ip:
+        results = [a for a in results if src_ip in a.src_ip]
+    if dst_ip:
+        results = [a for a in results if a.dst_ip and dst_ip in a.dst_ip]
+    if protocol:
+        results = [a for a in results if a.protocol == protocol.upper()]
+    if query:
+        results = [
+            a
+            for a in results
+            if query in " ".join([a.title, a.description, a.detector, a.src_ip, a.dst_ip or "", a.protocol]).lower()
+        ]
+    return results
 
-@app.route("/")
-def index():
-    return render_template_string(_HTML)
+
+def _list_files(directory: str, patterns) -> list:
+    base = Path(directory)
+    if not base.exists():
+        return []
+    files = []
+    for pattern in patterns:
+        for path in base.glob(pattern):
+            if path.is_file():
+                stat = path.stat()
+                files.append(
+                    {
+                        "name": path.name,
+                        "path": str(path),
+                        "size_bytes": stat.st_size,
+                        "modified": stat.st_mtime,
+                    }
+                )
+    files.sort(key=lambda item: item["modified"], reverse=True)
+    return files
 
 
-@app.route("/api/alerts")
-def api_alerts():
-    _tail_log(_log_path)
-    by_sev = Counter(a.get("severity", "LOW") for a in _alerts)
-    return jsonify({
-        "total": len(_alerts),
-        "by_severity": dict(by_sev),
-        "alerts": list(_alerts)[-100:],
-    })
+def _sse_alert_stream(load_dataset):
+    last_ids = set()
+    while True:
+        alerts, _ = load_dataset()
+        recent = alerts[-25:]
+        new_ids = {a.alert_id for a in recent}
+        if new_ids != last_ids:
+            yield f"data: {json.dumps([a.to_dict() for a in recent], default=str)}\n\n"
+            last_ids = new_ids
+        time.sleep(2)
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+def _sse_metrics_stream(metrics_payload):
+    while True:
+        yield f"data: {json.dumps(metrics_payload(), default=str)}\n\n"
+        time.sleep(5)
 
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="VIPER Web Dashboard")
-    parser.add_argument("--log",  default="logs/nids.log", help="Path to NIDS JSON log")
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="VIPER Vision Dashboard")
+    parser.add_argument("--log", default="logs/nids.log", help="Path to NIDS JSON log")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5000)
-    args = parser.parse_args()
-    _log_path = args.log
-    print(f"[*] Dashboard running at http://{args.host}:{args.port}")
-    app.run(host=args.host, port=args.port, debug=False)
+    parser.add_argument("--demo", action="store_true", help="Run with simulated VIPER Vision demo data")
+    parser.add_argument("--captures", default="captures", help="PCAP capture directory")
+    parser.add_argument("--reports", default="reports", help="Report output directory")
+    parser.add_argument("--interface", default="log replay", help="Interface label shown in the dashboard")
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    app = create_app(
+        log_path=args.log,
+        demo=args.demo,
+        captures_dir=args.captures,
+        reports_dir=args.reports,
+        interface=args.interface,
+    )
+    label = "demo mode" if args.demo else f"log: {args.log}"
+    print(f"[*] VIPER Vision running at http://{args.host}:{args.port} ({label})")
+    app.run(host=args.host, port=args.port, debug=False, threaded=True)
+
+
+if __name__ == "__main__":
+    main()

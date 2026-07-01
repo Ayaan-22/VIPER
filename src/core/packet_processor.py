@@ -112,15 +112,17 @@ class PacketProcessor:
             if packet is None:           # stop sentinel
                 return
 
-            try:
-                for detector in self._detectors:
+            for detector in self._detectors:
+                try:
                     detector.process(packet)
-            except Exception as exc:
-                log.error(f"Detector exception: {exc}", exc_info=True)
-            finally:
-                with self._lock:
-                    self._pkt_processed += 1
-                self._queue.task_done()
+                except Exception as exc:
+                    log.error(
+                        f"Detector '{detector.name}' raised on packet: {exc}",
+                        exc_info=True,
+                    )
+            with self._lock:
+                self._pkt_processed += 1
+            self._queue.task_done()
 
     # ------------------------------------------------------------------
     # Stats reporter

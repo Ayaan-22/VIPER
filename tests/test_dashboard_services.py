@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from dashboard.services.log_parser import parse_log
+from dashboard.services.metrics_service import build_metrics, protocol_breakdown, top_talkers
+from dashboard.services.suspicious_connection_service import group_suspicious_connections
+from dashboard.services.timeline_service import build_timeline, extract_port_scans
+
+
+class DashboardServiceTests(unittest.TestCase):
+    def _sample_log(self) -> str:
+        records = [
+            {"ts": "2026-01-01T00:00:00.000Z", "message": "packet_stats", "received": 100, "processed": 95, "dropped": 1, "queued": 4},
+            {"ts": "2026-01-01T00:00:10.000Z", "message": "packet_stats", "received": 250, "processed": 240, "dropped": 1, "queued": 0},
+            {
+                "ts": 1767225620.0,
+                "message": "alert",
+                "alert_id": "a1",
+                "detector": "port_scan",
+                "severity": "HIGH",
+                "src_ip": "203.0.113.10",
+                "dst_ip": "10.0.0.5",
+                "dst_port": 22,
+                "alert_message": "Port scan detected",
+                "unique_ports": 18,
+                "sample_ports": [21, 22, 80],
+            },
+            {
+                "ts": 1767225630.0,
+                "message": "alert",
+                "alert_id": "a2",
+                "detector": "udp_flood",
+                "severity": "CRITICAL",
+                "src_ip": "203.0.113.10",
+                "dst_ip": "10.0.0.53",
+                "dst_port": 53,
+                "alert_message": "UDP flood: 300 pkt/s",
+                "rate_pps": 300,
+            },
+        ]
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False, encoding="utf-8")
+        for record in records:
+            tmp.write(json.dumps(record) + "\n")
+        tmp.close()
+        self.addCleanup(lambda: Path(tmp.name).unlink(missing_ok=True))
+        return tmp.name
+
+    def test_log_parser_reads_alerts_and_packet_stats(self):
+        alerts, packet_stats = parse_log(self._sample_log())
+        self.assertEqual(len(alerts), 2)
+        self.assertEqual(len(packet_stats), 2)
+        self.assertEqual(alerts[0].detector, "port_scan")
+        self.assertEqual(alerts[1].protocol, "UDP")
+
+    def test_metrics_aggregation(self):
+        alerts, packet_stats = parse_log(self._sample_log())
+        metrics = build_metrics(alerts, packet_stats)
+        self.assertEqual(metrics.summary.total_packets, 250)
+        self.assertEqual(metrics.alerts_by_severity["CRITICAL"], 1)
+        self.assertEqual(metrics.top_sources[0].ip, "203.0.113.10")
+
+    def test_top_talker_and_protocol_breakdown(self):
+        alerts, packet_stats = parse_log(self._sample_log())
+        talkers = top_talkers(alerts)
+        protocols = protocol_breakdown(alerts, packet_stats)
+        self.assertEqual(talkers[0].alert_count, 2)
+        self.assertTrue(any(item.protocol == "UDP" and item.alert_count == 1 for item in protocols))
+
+    def test_timeline_and_port_scan_extraction(self):
+        alerts, _ = parse_log(self._sample_log())
+        timeline = build_timeline(alerts)
+        scans = extract_port_scans(alerts, detection_threshold=15)
+        self.assertEqual(timeline[0].event_type, "Port scan started")
+        self.assertEqual(scans[0].unique_ports, 18)
+
+    def test_suspicious_connection_grouping(self):
+        alerts, _ = parse_log(self._sample_log())
+        groups = group_suspicious_connections(alerts, window_seconds=120)
+        self.assertEqual(len(groups), 2)
+        self.assertTrue(all(group.alert_count >= 1 for group in groups))
+
+
+class DashboardApiTests(unittest.TestCase):
+    def test_demo_api_status(self):
+        try:
+            from dashboard.app import create_app
+        except SystemExit:
+            self.skipTest("Flask is not installed")
+
+        app = create_app(demo=True)
+        app.testing = True
+        with app.test_client() as client:
+            status = client.get("/api/status")
+            summary = client.get("/api/metrics/summary")
+        self.assertEqual(status.status_code, 200)
+        self.assertTrue(status.get_json()["demo"])
+        self.assertEqual(summary.status_code, 200)
+        self.assertGreater(summary.get_json()["alerts_generated"], 0)
+
+
+class DashboardConfigTests(unittest.TestCase):
+    def test_dashboard_defaults_exist(self):
+        try:
+            from src.utils.config_loader import load_config
+        except ImportError:
+            self.skipTest("PyYAML is not installed")
+        cfg = load_config(path="/nonexistent/path.yaml")
+        self.assertEqual(cfg.dashboard["port"], 5000)
+        self.assertEqual(cfg.analytics["suspicious_group_window_seconds"], 120)
+
+
+if __name__ == "__main__":
+    unittest.main()
+

@@ -390,6 +390,274 @@ class TestDisabledDetector(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# §3.1 — Severity comparison operator tests (previously untested)
+# ---------------------------------------------------------------------------
+
+class TestSeverityOperators(unittest.TestCase):
+
+    def test_lt(self):
+        self.assertTrue(Severity.LOW < Severity.MEDIUM)
+        self.assertTrue(Severity.MEDIUM < Severity.HIGH)
+        self.assertTrue(Severity.HIGH < Severity.CRITICAL)
+        self.assertFalse(Severity.CRITICAL < Severity.LOW)
+
+    def test_le(self):
+        self.assertTrue(Severity.LOW <= Severity.LOW)
+        self.assertTrue(Severity.LOW <= Severity.MEDIUM)
+        self.assertFalse(Severity.HIGH <= Severity.MEDIUM)
+
+    def test_gt(self):
+        self.assertTrue(Severity.CRITICAL > Severity.HIGH)
+        self.assertTrue(Severity.HIGH > Severity.MEDIUM)
+        self.assertFalse(Severity.LOW > Severity.MEDIUM)
+
+    def test_ge(self):
+        self.assertTrue(Severity.CRITICAL >= Severity.CRITICAL)
+        self.assertTrue(Severity.HIGH >= Severity.MEDIUM)
+        self.assertFalse(Severity.LOW >= Severity.MEDIUM)
+
+    def test_sorted(self):
+        """Verify that sorted() works via natural ordering."""
+        shuffled = [Severity.CRITICAL, Severity.LOW, Severity.HIGH, Severity.MEDIUM]
+        result = sorted(shuffled)
+        self.assertEqual(result, [Severity.LOW, Severity.MEDIUM, Severity.HIGH, Severity.CRITICAL])
+
+    def test_enum_has_exactly_four_members(self):
+        """Ensure no rogue fifth member like _ORDER exists."""
+        self.assertEqual(len(list(Severity)), 4)
+
+
+# ---------------------------------------------------------------------------
+# §3.2 — Alert round-trip (to_log_dict → JSON → --report-only parser)
+# ---------------------------------------------------------------------------
+
+class TestAlertRoundTrip(unittest.TestCase):
+
+    def test_message_survives_round_trip(self):
+        """Ensure to_log_dict's 'alert_message' key is read back correctly."""
+        import json
+        original = Alert(
+            detector="port_scan",
+            severity=Severity.HIGH,
+            src_ip="9.9.9.9",
+            message="Port scan detected: 20 ports",
+        )
+        log_dict = original.to_log_dict()
+        json_str = json.dumps(log_dict)
+        obj = json.loads(json_str)
+
+        # This is the key the --report-only parser must use
+        self.assertIn("alert_message", obj)
+        self.assertEqual(obj["alert_message"], "Port scan detected: 20 ports")
+
+        # Reconstruct as the parser does (after fix)
+        reconstructed = Alert(
+            alert_id=obj["alert_id"],
+            timestamp=obj.get("ts", 0),
+            detector=obj.get("detector", "unknown"),
+            severity=Severity[obj.get("severity", "LOW")],
+            src_ip=obj.get("src_ip", ""),
+            message=obj.get("alert_message", ""),
+        )
+        self.assertEqual(reconstructed.message, original.message)
+
+    def test_message_key_is_not_alert_text(self):
+        """The JSON 'message' key is the log record message, NOT the alert text."""
+        original = Alert(
+            detector="test",
+            severity=Severity.MEDIUM,
+            src_ip="1.2.3.4",
+            message="Real alert description",
+        )
+        log_dict = original.to_log_dict()
+        # 'message' should NOT be in to_log_dict output
+        self.assertNotIn("message", log_dict)
+
+
+# ---------------------------------------------------------------------------
+# §3.6 — UDP Flood Detector tests
+# ---------------------------------------------------------------------------
+
+class TestUdpFloodDetector(unittest.TestCase):
+
+    def test_fires_when_rate_exceeded(self):
+        from src.detectors.flood_detectors import UdpFloodDetector
+        cfg = {"enabled": True, "packets_per_second": 5, "window_seconds": 1, "whitelist_ips": []}
+        h = _silent_handler()
+        det = UdpFloodDetector(cfg, h)
+
+        for _ in range(20):
+            pkt = _make_packet("4.4.4.4", proto="UDP")
+            det.process(pkt)
+
+        self.assertGreater(len(h.history), 0)
+        self.assertEqual(h.history[0].detector, "udp_flood")
+
+    def test_non_udp_ignored(self):
+        from src.detectors.flood_detectors import UdpFloodDetector
+        cfg = {"enabled": True, "packets_per_second": 5, "window_seconds": 1, "whitelist_ips": []}
+        h = _silent_handler()
+        det = UdpFloodDetector(cfg, h)
+
+        for _ in range(20):
+            pkt = _make_packet("4.4.4.4", proto="TCP", flags=0x02)
+            det.process(pkt)
+
+        self.assertEqual(len(h.history), 0)
+
+
+# ---------------------------------------------------------------------------
+# §3.6 — ICMP Flood Detector tests
+# ---------------------------------------------------------------------------
+
+class TestIcmpFloodDetector(unittest.TestCase):
+
+    def test_fires_when_rate_exceeded(self):
+        from src.detectors.flood_detectors import IcmpFloodDetector
+        cfg = {"enabled": True, "packets_per_second": 5, "window_seconds": 1, "whitelist_ips": []}
+        h = _silent_handler()
+        det = IcmpFloodDetector(cfg, h)
+
+        for _ in range(20):
+            pkt = _make_packet("5.5.5.5", proto="ICMP")
+            det.process(pkt)
+
+        self.assertGreater(len(h.history), 0)
+        self.assertEqual(h.history[0].detector, "icmp_flood")
+
+    def test_non_icmp_ignored(self):
+        from src.detectors.flood_detectors import IcmpFloodDetector
+        cfg = {"enabled": True, "packets_per_second": 5, "window_seconds": 1, "whitelist_ips": []}
+        h = _silent_handler()
+        det = IcmpFloodDetector(cfg, h)
+
+        for _ in range(20):
+            pkt = _make_packet("5.5.5.5", proto="TCP", flags=0x02)
+            det.process(pkt)
+
+        self.assertEqual(len(h.history), 0)
+
+
+# ---------------------------------------------------------------------------
+# §3.6 — AnomalyDetector tests
+# ---------------------------------------------------------------------------
+
+class TestAnomalyDetector(unittest.TestCase):
+
+    def _make_detector(self, min_samples=5, deviation_factor=3.0, whitelist=None):
+        from src.detectors.anomaly import AnomalyDetector
+        cfg = {
+            "enabled": True,
+            "min_samples": min_samples,
+            "deviation_factor": deviation_factor,
+            "baseline_window_seconds": 60,
+            "whitelist_ips": whitelist or [],
+        }
+        h = _silent_handler()
+        det = AnomalyDetector(cfg, h)
+        return det, h
+
+    def test_no_alert_during_baseline(self):
+        det, h = self._make_detector(min_samples=20)
+        for _ in range(19):
+            pkt = _make_packet("7.7.7.7", length=100)
+            det.process(pkt)
+        self.assertEqual(len(h.history), 0)
+
+    def test_fires_on_anomalous_size(self):
+        det, h = self._make_detector(min_samples=5, deviation_factor=2.0)
+
+        # Build baseline with consistent small packets
+        for _ in range(10):
+            pkt = _make_packet("8.8.8.8", length=100)
+            det.process(pkt)
+
+        # Send anomalously large packet
+        pkt = _make_packet("8.8.8.8", length=10000)
+        det.process(pkt)
+
+        self.assertGreater(len(h.history), 0)
+        self.assertEqual(h.history[0].detector, "anomaly")
+
+    def test_whitelist_skipped(self):
+        det, h = self._make_detector(min_samples=3, whitelist=["7.7.7.7"])
+        for _ in range(20):
+            pkt = _make_packet("7.7.7.7", length=100)
+            det.process(pkt)
+        # Even large anomalous packet from whitelisted IP
+        pkt = _make_packet("7.7.7.7", length=99999)
+        det.process(pkt)
+        self.assertEqual(len(h.history), 0)
+
+    def test_thread_safety_stress(self):
+        """Hammer AnomalyDetector.process() from multiple threads concurrently."""
+        det, h = self._make_detector(min_samples=5, deviation_factor=100.0)
+        errors = []
+
+        def worker(ip_suffix):
+            try:
+                for i in range(50):
+                    pkt = _make_packet(f"10.0.0.{ip_suffix}", length=64 + i)
+                    det.process(pkt)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(errors), 0, f"Thread errors: {errors}")
+
+
+# ---------------------------------------------------------------------------
+# §3.3 — PacketProcessor exception isolation test
+# ---------------------------------------------------------------------------
+
+class TestPacketProcessorIsolation(unittest.TestCase):
+
+    def test_failing_detector_does_not_block_others(self):
+        """If one detector raises, subsequent detectors still see the packet."""
+        from src.core.packet_processor import PacketProcessor
+
+        call_log = []
+
+        class GoodDetector:
+            name = "good"
+            enabled = True
+            def process(self, pkt):
+                call_log.append("good")
+
+        class BadDetector:
+            name = "bad"
+            enabled = True
+            def process(self, pkt):
+                raise RuntimeError("intentional failure")
+
+        class AnotherGoodDetector:
+            name = "another_good"
+            enabled = True
+            def process(self, pkt):
+                call_log.append("another_good")
+
+        # Bad detector is sandwiched between two good ones
+        detectors = [GoodDetector(), BadDetector(), AnotherGoodDetector()]
+        pp = PacketProcessor(detectors, worker_threads=1, queue_maxsize=10)
+        pp.start()
+
+        pkt = _make_packet("6.6.6.6")
+        pp.enqueue(pkt)
+
+        # Wait for processing
+        time.sleep(0.5)
+        pp.stop()
+
+        self.assertIn("good", call_log)
+        self.assertIn("another_good", call_log)
+
+
+# ---------------------------------------------------------------------------
 # Config loader tests
 # ---------------------------------------------------------------------------
 
@@ -418,3 +686,4 @@ class TestConfigLoader(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

@@ -67,18 +67,23 @@ def create_app(
     auth_username: str = "viper",
 ) -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
-    resolved_log_path = Path(log_path).expanduser()
-    allowed_log_dir = str(resolved_log_path.parent if resolved_log_path.parent != Path("") else Path("logs"))
+    configured_api_key = api_key or os.getenv("VIPER_DASHBOARD_API_KEY", "")
+    allowed_log_dir = os.getenv("VIPER_DASHBOARD_LOG_DIR") or _default_allowed_log_dir(log_path)
     app.config.update(
         VIPER_LOG_PATH=log_path,
         VIPER_DEMO=demo,
         VIPER_CAPTURES_DIR=captures_dir,
         VIPER_REPORTS_DIR=reports_dir,
         VIPER_INTERFACE=interface,
-        VIPER_API_KEY=api_key or os.getenv("VIPER_DASHBOARD_API_KEY", ""),
+        VIPER_API_KEY=configured_api_key,
         VIPER_AUTH_USERNAME=os.getenv("VIPER_DASHBOARD_AUTH_USER", auth_username),
-        VIPER_ALLOWED_LOG_DIR=os.getenv("VIPER_DASHBOARD_LOG_DIR", allowed_log_dir),
+        VIPER_ALLOWED_LOG_DIR=allowed_log_dir,
     )
+    if not configured_api_key:
+        app.logger.warning(
+            "VIPER Vision dashboard API key is not configured; dashboard requests are unauthenticated. "
+            "Set VIPER_DASHBOARD_API_KEY or pass api_key before exposing the dashboard."
+        )
     app.viper_settings = dict(DEFAULT_SETTINGS)
     app.viper_settings["log_file_path"] = log_path
 
@@ -341,7 +346,16 @@ def _request_has_valid_key(req, username: str, expected_key: str) -> bool:
     return hmac.compare_digest(supplied, expected_key)
 
 
+def _default_allowed_log_dir(log_path: str) -> str:
+    resolved_log_path = Path(log_path).expanduser()
+    if resolved_log_path.parent == Path("."):
+        return "logs"
+    return str(resolved_log_path.parent)
+
+
 def _resolve_allowed_path(path_value: str, allowed_dir: str) -> Path:
+    if path_value is None or not str(path_value).strip():
+        raise ValueError("log_file_path must not be empty")
     requested = Path(str(path_value)).expanduser()
     allowed = Path(allowed_dir).expanduser().resolve()
     if not requested.is_absolute():

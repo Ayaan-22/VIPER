@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from base64 import b64encode
 from pathlib import Path
+from unittest.mock import patch
 
 from dashboard.services.log_parser import parse_log
 from dashboard.services.metrics_service import build_metrics, protocol_breakdown, top_talkers
@@ -149,6 +151,21 @@ class DashboardApiTests(unittest.TestCase):
         self.assertEqual(unauthorized.status_code, 401)
         self.assertEqual(authorized.status_code, 200)
 
+    def test_create_app_warns_when_api_key_missing_without_changing_no_key_access(self):
+        try:
+            from dashboard.app import create_app
+        except SystemExit:
+            self.skipTest("Flask is not installed")
+
+        with patch.dict(os.environ, {"VIPER_DASHBOARD_API_KEY": ""}):
+            with self.assertLogs("dashboard.app", level="WARNING") as logs:
+                app = create_app(demo=True)
+        app.testing = True
+        with app.test_client() as client:
+            response = client.get("/api/status")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("API key is not configured", "\n".join(logs.output))
+
     def test_alerts_sort_severity_by_rank(self):
         try:
             from dashboard.app import create_app
@@ -177,6 +194,23 @@ class DashboardApiTests(unittest.TestCase):
             response = client.patch("/api/settings", json={"log_file_path": str(outside)})
         self.assertEqual(response.status_code, 400)
 
+    def test_settings_reject_empty_log_path(self):
+        try:
+            from dashboard.app import create_app
+        except SystemExit:
+            self.skipTest("Flask is not installed")
+
+        app = create_app(log_path="logs/nids.log", api_key="secret")
+        app.testing = True
+        with app.test_client() as client:
+            response = client.patch(
+                "/api/settings",
+                json={"log_file_path": ""},
+                headers={"X-VIPER-API-Key": "secret"},
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("must not be empty", response.get_json()["error"])
+
     def test_settings_accept_cwd_relative_log_path_in_allowed_dir(self):
         try:
             from dashboard.app import create_app
@@ -189,6 +223,16 @@ class DashboardApiTests(unittest.TestCase):
             response = client.patch("/api/settings", json={"log_file_path": "logs/nids.log"})
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["log_file_path"].endswith(str(Path("logs/nids.log"))))
+
+    def test_bare_log_filename_defaults_allowed_log_dir_to_logs(self):
+        try:
+            from dashboard.app import create_app
+        except SystemExit:
+            self.skipTest("Flask is not installed")
+
+        with patch.dict(os.environ, {"VIPER_DASHBOARD_LOG_DIR": ""}):
+            app = create_app(log_path="nids.log", api_key="secret")
+        self.assertEqual(app.config["VIPER_ALLOWED_LOG_DIR"], "logs")
 
 
 class DashboardConfigTests(unittest.TestCase):

@@ -5,22 +5,34 @@ permissions:
 jobs:
   tests:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         python: ["3.12", "3.13"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: ${{ matrix.python }}
           cache: pip
+          cache-dependency-path: |
+            requirements-runtime.lock
+            requirements-dev.txt
+      # Hosted Windows Python also contains tools such as pipx. Keep their
+      # dependencies separate from VIPER's pinned runtime and pip check.
+      - name: Create isolated test environment
+        run: |
+          python -m venv .venv
+          python -c "import os; from pathlib import Path; scripts = Path('.venv').resolve() / ('Scripts' if os.name == 'nt' else 'bin'); open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8').write(str(scripts) + '\n')"
+      - name: Verify Python isolation
+        run: python -c "import sys; assert sys.prefix != sys.base_prefix, 'CI must use the project virtual environment'; print(sys.executable)"
       - run: python -m pip install --require-hashes -r requirements-runtime.lock
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m pip check
       - run: python -m pytest --cov=src --cov=dashboard --cov-report=xml --cov-report=term
       - run: python main.py --config config/config.example.yaml --dry-run
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22"
       - run: node --check dashboard/static/vision.js
@@ -28,16 +40,22 @@ jobs:
   dependencies:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
+      - name: Create isolated audit environment
+        run: |
+          python -m venv .venv
+          python -c "import os; from pathlib import Path; scripts = Path('.venv').resolve() / ('Scripts' if os.name == 'nt' else 'bin'); open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8').write(str(scripts) + '\n')"
+      - name: Verify Python isolation
+        run: python -c "import sys; assert sys.prefix != sys.base_prefix, 'CI must use the project virtual environment'; print(sys.executable)"
       - run: python -m pip install pip-audit
       - run: python -m pip_audit --no-deps --disable-pip -r requirements-runtime.lock
   image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Create disposable build-context secret canaries
         run: python -c "from pathlib import Path; Path('.env').write_text('VIPER_CANARY=DO_NOT_SHIP'); Path('config/config.yaml').write_text('canary_DO_NOT_SHIP')"
       - run: docker build --tag viper-ci .

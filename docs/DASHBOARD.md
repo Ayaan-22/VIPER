@@ -35,7 +35,16 @@ The dashboard exposes Server-Sent Events at:
 - `GET /api/stream/alerts`
 - `GET /api/stream/metrics`
 
-If `flask-sock` is installed, WebSocket routes are also available:
+With a compatible server and WebSockets explicitly enabled, optional routes are available (disabled by the default Waitress entry points):
 
 - `/ws/alerts`
 - `/ws/metrics`
+
+## Vision 2
+
+The main browser uses `/api/snapshot`, with persistent preferences, server-side filtering/pagination, an alert evidence drawer, measured traffic/health charts, safe report/capture downloads and responsive dark/light layouts. The dashboard incrementally indexes active and rotated logs in SQLite instead of reparsing each file per request. See [Operations](OPERATIONS.md) and [API](API.md) for compatibility changes and limits.
+
+The readable typography update uses a 15px system-font base, 14px table text,
+larger labels, increased line spacing and stronger secondary-text contrast.
+Controls have a minimum height of 40px. Dark and light themes include distinct
+button foreground colors. Tables scroll within their panels on narrow screens.

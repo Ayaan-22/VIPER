@@ -1,53 +1,60 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>VIPER Vision</title>
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="VIPER Vision network monitoring and investigation workspace">
+  <title>VIPER Vision · Security workspace</title>
+  <link rel="icon" href="{{ url_for('static', filename='viper.svg') }}" type="image/svg+xml">
   <link rel="stylesheet" href="{{ url_for('static', filename='vision.css') }}">
 </head>
 <body data-demo="{{ 'true' if demo else 'false' }}">
-  <aside class="sidebar">
-    <div class="brand">
-      <div class="brand-mark">V</div>
-      <div>
-        <strong>VIPER Vision</strong>
-        <span>Network Intrusion Visualizer</span>
-      </div>
-    </div>
-    <nav>
-      <a href="/" data-route="/">Overview</a>
-      <a href="/alerts" data-route="/alerts">Live Alerts</a>
-      <a href="/packets" data-route="/packets">Packet Summary</a>
-      <a href="/talkers" data-route="/talkers">Top Talkers</a>
-      <a href="/protocols" data-route="/protocols">Protocols</a>
-      <a href="/port-scans" data-route="/port-scans">Port Scans</a>
-      <a href="/connections" data-route="/connections">Suspicious Connections</a>
-      <a href="/timeline" data-route="/timeline">Attack Timeline</a>
-      <a href="/reports" data-route="/reports">Reports</a>
-      <a href="/captures" data-route="/captures">PCAP Captures</a>
-      <a href="/settings" data-route="/settings">Settings</a>
-      <a href="/about" data-route="/about">About VIPER</a>
+  <a class="skip-link" href="#view">Skip to content</a>
+  <aside class="sidebar" id="sidebar">
+    <a class="brand" href="/" data-route="/"><span class="brand-mark">V</span><span>VIPER<span class="brand-sub">VISION / SECURITY OPERATIONS</span></span></a>
+    <div class="workspace"><span class="workspace-icon">N</span><span>Network workspace<small>Local sensor environment</small></span><span class="workspace-chevron">⌄</span></div>
+    <p class="nav-label">MONITOR</p>
+    <nav aria-label="Monitoring">
+      <a href="/" data-route="/" data-icon="overview">Overview</a>
+      <a href="/alerts" data-route="/alerts" data-icon="alerts">Alert inbox<span class="nav-count" id="navAlertCount">—</span></a>
+      <a href="/packets" data-route="/packets" data-icon="activity">Traffic & health</a>
+      <a href="/protocols" data-route="/protocols" data-icon="layers">Protocols</a>
+      <a href="/talkers" data-route="/talkers" data-icon="network">Sources & targets</a>
     </nav>
+    <p class="nav-label">INVESTIGATE</p>
+    <nav aria-label="Investigation">
+      <a href="/port-scans" data-route="/port-scans" data-icon="scan">Scan activity</a>
+      <a href="/connections" data-route="/connections" data-icon="connections">Connection groups</a>
+      <a href="/timeline" data-route="/timeline" data-icon="timeline">Event timeline</a>
+      <a href="/captures" data-route="/captures" data-icon="capture">Packet captures</a>
+      <a href="/reports" data-route="/reports" data-icon="report">Reports</a>
+    </nav>
+    <div class="sidebar-bottom">
+      <nav aria-label="Workspace settings"><a href="/settings" data-route="/settings" data-icon="settings">Settings</a><a href="/about" data-route="/about" data-icon="info">About VIPER</a></nav>
+      <div class="sensor-card"><span class="status-dot" id="sensorDot"></span><div id="sensorLabel">Connecting to workspace<small>Waiting for first snapshot</small></div></div>
+      <div class="sidebar-footer">VIPER VISION <span>v2.0</span></div>
+    </div>
   </aside>
-
   <main class="shell">
     <header class="topbar">
-      <div>
-        <p class="eyebrow" id="modeLabel">Historical mode</p>
-        <h1 id="pageTitle">Dashboard Overview</h1>
-      </div>
-      <div class="status-strip">
-        <span class="status-pill" id="engineStatus">Loading</span>
-        <span id="clock"></span>
-      </div>
+      <button class="icon-button mobile-menu" id="menuToggle" aria-label="Toggle navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
+      <div class="breadcrumb">Workspace <span>/</span> <strong>Network security</strong></div>
+      <div class="topbar-right"><span id="modeLabel" class="environment-label">Connecting</span><span class="topbar-divider"></span><span id="clock"></span><span class="avatar" title="Monitoring workspace">VO</span></div>
     </header>
-
-    <section id="toast" class="toast" hidden></section>
-    <section id="view" class="view"></section>
+    <div class="page-content">
+      <div class="page-heading"><div><p class="eyebrow" id="pageEyebrow">SECURITY OPERATIONS</p><h1 id="pageTitle">Network overview</h1><p class="page-description" id="pageDescription">Monitor traffic, investigate signals, and preserve evidence.</p></div>
+        <div class="page-actions"><label class="sr-only" for="timeRange">Alert time range</label><select id="timeRange"><option value="15">Last 15 minutes</option><option value="60">Last hour</option><option value="360">Last 6 hours</option><option value="1440">Last 24 hours</option><option value="10080">Last 7 days</option></select><button id="pauseFeed" class="button subtle"><span data-icon="pause"></span><span id="pauseLabel">Pause</span></button><button id="refreshButton" class="button primary"><span data-icon="refresh"></span>Refresh</button></div>
+      </div>
+      <div id="dataNotice" class="notice" hidden></div>
+      <div class="update-strip"><span><span class="status-dot" id="updateDot"></span><span id="updateLabel">Loading monitoring data…</span></span><span id="lastUpdated"></span></div>
+      <section id="view" class="view" tabindex="-1" aria-label="Workspace content"><div class="loading-state"><span class="loader"></span><h2>Opening your workspace</h2><p>Reading the latest sensor snapshot.</p></div></section>
+      <footer class="page-footer"><span>VIPER Vision <span class="footer-dot">·</span> Network detection & evidence</span><span>Defensive monitoring <span class="footer-dot">·</span> <span id="footerScope">Measured traffic. Explicit evidence.</span></span></footer>
+    </div>
   </main>
-
-  <script src="{{ url_for('static', filename='vision.js') }}"></script>
+  <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+  <aside class="detail-drawer" id="detailDrawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" hidden><div class="drawer-heading"><span class="eyebrow">ALERT INVESTIGATION</span><button class="icon-button" id="closeDrawer" aria-label="Close alert details">✕</button></div><div id="drawerContent"></div></aside>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="{{ url_for('static', filename='vision.js') }}" defer></script>
 </body>
 </html>
-

@@ -1,8 +1,34 @@
 # VIPER Vision — Network Intrusion Detection and Visualization
 
-VIPER Vision is a real-time Network Intrusion Detection and Visualization platform built in Python. It captures network traffic, detects port scans, floods, brute-force attempts, and statistical anomalies, then visualizes suspicious activity through a modern dashboard with alert timelines, protocol analytics, top talkers, suspicious connection grouping, PCAP exports, and professional reports.
+VIPER Vision is a real-time Network Intrusion Detection and Visualization platform built in Python. It captures network traffic, detects port scans, floods, repeated service connection attempts, and statistical anomalies, then visualizes suspicious activity through a modern dashboard with alert timelines, protocol analytics, top talkers, suspicious connection grouping, PCAP exports, and professional reports.
 
 VIPER remains defensive and monitoring-focused. Use it only on networks where you have explicit permission to capture and analyze traffic.
+
+## Vision 2 hardening and dashboard upgrade
+
+The dashboard now includes an investigation inbox, evidence drawer, measured
+traffic charts, sensor health/loss counters, protocol analytics, scan episodes,
+connection groups, timeline, artifact downloads and persistent preferences.
+The backend adds an incremental persistent SQLite index, rotation/restart
+continuity, cursor-based streams, bounded detector state, verified SMTP TLS,
+validated configuration and draining shutdown.
+
+Read [Operations and release acceptance](docs/OPERATIONS.md) and the
+[audit remediation record](audit/2026-11-01/REMEDIATION.md). Historical audits
+remain as records of their original baselines.
+
+Install deployed runtimes with `python -m pip install --require-hashes -r
+requirements-runtime.lock`. For development, additionally install
+`requirements-dev.txt`. Copy `config/config.example.yaml` to private
+`config/config.yaml` only if that file does not already exist. Validate changes
+with `python main.py --config config/config.yaml --dry-run`.
+
+Both dashboard CLIs use Waitress by default. The browser uses a consolidated
+snapshot endpoint; SSE is available for integration clients, and WebSockets
+are optional on compatible development/deployment servers. Source rankings
+count alerts; protocol packet shares require measured counters. Connection
+attempts do not establish authentication failure. Live-network and container
+acceptance remain deployment-specific release checks.
 
 ---
 
@@ -31,8 +57,8 @@ VIPER remains defensive and monitoring-focused. Use it only on networks where yo
 
 | Category | Capability |
 | --- | --- |
-| **Detection** | Port scan, SYN flood, UDP flood, ICMP flood, brute-force, anomaly |
-| **Windowing** | Thread-safe sliding-window counters — no stale state |
+| **Detection** | IPv4/IPv6 port scans, host sweeps, SYN/UDP/ICMP flood heuristics, connection attempts, anomalies |
+| **Windowing** | Bounded event-time windows with observable capacity loss |
 | **Severity** | Dynamic severity escalation (LOW → CRITICAL) based on rate |
 | **Alerting** | Console (coloured), rotating JSON log, email, webhook |
 | **Capture** | Rotating PCAP export for offline forensics |
@@ -162,7 +188,7 @@ viper/
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.12 or 3.13
 - Linux, macOS, or Windows
 - Scapy requires raw-socket access:
   - **Linux / macOS**: Root (`sudo`) or `CAP_NET_RAW` privilege
@@ -191,7 +217,7 @@ source .venv/bin/activate
 
 # 3. Install dependencies
 python -m pip install --upgrade pip
-pip install -r requirements.txt
+pip install --require-hashes -r requirements-runtime.lock
 ```
 
 ---
@@ -311,7 +337,7 @@ python main.py --dry-run
 ```
 
 **Post-Incident Analysis:**
-If your NIDS crashed or was stopped, you can generate an HTML/PDF/Text report purely from the saved JSON logs without sniffing new packets.
+After stopping the sensor, generate text/JSON reports and PNG charts from retained JSON logs without capturing new traffic. HTML reports are generated through the dashboard.
 
 ```bash
 python main.py --report-only --log logs/nids_yesterday.log
@@ -339,11 +365,11 @@ Measures per-source packet rate over a 1-second sliding window.  Severity escala
 
 ### Brute Force
 
-Counts connection attempts to configurable service ports (SSH, RDP, FTP, Telnet, SMTP, POP3, IMAP) per source over a 30-second window.  Fires a HIGH alert when the attempt count exceeds the threshold.
+Counts distinct SYN connection attempts per source, destination, and service within a time window. Retransmitted SYNs are deduplicated. A HIGH signal means repeated connection attempts; authentication outcomes remain unknown without host logs.
 
 ### Statistical Anomaly
 
-Uses **Welford's online algorithm** to maintain a per-source running mean and standard deviation of packet sizes and inter-arrival times — with no ML library required.  Alerts when a new observation deviates by more than `deviation_factor` (default: 3.0) standard deviations from the learnt baseline.
+Uses **Welford's online algorithm** to maintain a bounded rolling trusted per-source mean and standard deviation of packet sizes and inter-arrival times — with no ML library required.  Alerts when a new observation deviates by more than `deviation_factor` (default: 3.0) standard deviations from the learnt baseline.
 
 ---
 
@@ -386,7 +412,7 @@ VIPER Vision features a web-based intrusion visualization dashboard to monitor n
 
 ### 1. Live Monitoring Mode
 
-In this mode, the NIDS engine captures traffic and writes alerts in real-time to a JSON log file. The dashboard monitors this log file, streaming alerts and traffic metrics to the web UI using **Server-Sent Events (SSE)** or **WebSockets** (requires `flask-sock`).
+In this mode, the NIDS engine captures traffic and writes alerts in real-time to a JSON log file. The dashboard incrementally indexes the active and rotated logs and serves a consolidated snapshot to the browser. Cursor-based SSE is available for integration clients.
 
 To run in Live Monitoring Mode, you need to open two terminal windows (both in the active virtual environment):
 
@@ -477,8 +503,7 @@ Open **`http://localhost:5000`** in your browser to access the interface. The da
 
 The dashboard supports two channels for pushing live data updates to the client:
 
-1. **Server-Sent Events (SSE)** (Default): Built-in and works out-of-the-box using the `/api/stream/alerts` and `/api/stream/metrics` routes.
-2. **WebSockets** (Recommended for lower overhead): Triggered automatically if `flask-sock` is installed, utilizing `/ws/alerts` and `/ws/metrics` routes. If `flask-sock` is not available, the dashboard gracefully falls back to SSE.
+The browser polls `/api/snapshot` using the saved refresh interval. This avoids multiple full-log reads per refresh. External clients can use cursor-based `/api/stream/alerts` and `/api/stream/metrics` SSE routes. SSE sends individual alerts with event IDs and signals unavailable history with a `gap` event. Up to four streams are accepted per app. Optional WebSocket routes require a compatible server and explicit configuration; Waitress entry points disable them.
 
 ---
 
@@ -531,12 +556,14 @@ tshark -r captures/capture_20250101_120000_1735732800000000000.pcap -Y "tcp.flag
 
 ## Running Tests
 
+Install development dependencies with `python -m pip install -r requirements-dev.txt`. JavaScript rendering regressions run with `node --test tests/dashboard.test.cjs`.
+
 ```bash
 # All tests
-pytest
+python -m pytest
 
 # With coverage
-pytest --cov=src --cov-report=term-missing
+python -m pytest --cov=src --cov=dashboard --cov-report=term-missing
 
 # A specific test class
 pytest tests/test_detectors.py::TestPortScanDetector -v
@@ -552,11 +579,11 @@ Tests cover: `SlidingWindow`, `SlidingWindowDict`, `Alert`/`Severity`, `AlertHan
 > Modern Docker installations use `docker compose` without the hyphen. For older versions, replace `docker compose` with `docker-compose`.
 
 ```bash
-# 1. Build the Docker images
-docker compose build
-
-# 2. Set the dashboard API key required by the dashboard services
+# 1. Set the dashboard API key before Compose parses its configuration
 export VIPER_DASHBOARD_API_KEY="replace-with-a-long-random-secret"
+
+# 2. Build the Docker images
+docker compose build
 
 # 3. Start all services (NIDS sensor + dashboard) in the background
 docker compose up -d
@@ -584,7 +611,7 @@ The sensor container requires `NET_ADMIN` and `NET_RAW` for Scapy packet capture
 | --- | --- |
 | **Sliding windows over fixed counters** | Counters reset at arbitrary boundaries causing bursts to split across windows; sliding windows give a continuous view |
 | **Thread-pool + queue** | Decouples capture (must be fast) from detection (may be slow); bounded queue prevents OOM under extreme load |
-| **Welford's algorithm** | Single-pass, O(1) per sample, numerically stable — no need for NumPy or keeping a full history buffer |
+| **Welford's algorithm** | Incremental mean/variance with removal of expired samples; bounded trusted history |
 | **Dependency injection** | Detectors are completely testable without Scapy or a network interface |
 | **YAML config + deep-merge** | Users can supply a partial config; missing keys always fall back to safe defaults |
 | **JSON structured logs** | Machine-parseable; trivially ingested by ELK, Splunk, Grafana Loki, or `jq` |
@@ -599,8 +626,8 @@ The sensor container requires `NET_ADMIN` and `NET_RAW` for Scapy packet capture
 - **GeoIP enrichment** — annotate alerts with country/ASN using `maxminddb`.
 - **eBPF integration** — use `bcc` or `pyshark` for kernel-space filtering to reduce Python-side overhead by 10×.
 - **Prometheus metrics** — expose packet rates and alert counts as a `/metrics` endpoint for Grafana dashboards.
-- **Alert deduplication** — group repeated alerts from the same source into a single aggregated event.
-- **IPv6 support** — extend all detectors to handle IPv6 headers.
+- **Incident workflow** — add operator-specific assignment and resolution with identity-backed audit trails.
+- **Coverage expansion** — add validated stream reassembly and protocol-specific signatures beyond the current IPv4/IPv6 heuristics.
 - **Cluster mode** — distribute capture across multiple sensors and aggregate alerts centrally.
 
 ---

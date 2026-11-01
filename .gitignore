@@ -5,8 +5,10 @@ __pycache__/
 *.so
 *.egg
 *.egg-info/
+*.whl
 dist/
 build/
+pip-wheel-metadata/
 
 # Virtual Environments
 .venv/
@@ -21,8 +23,19 @@ ENV/
 htmlcov/
 .tox/
 .nox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
 coverage.xml
+/coverage.json
+/junit.xml
 nosetests.xml
+
+# Browser Test Dependencies and Generated Reports
+node_modules/
+/playwright-report/
+/test-results/
+/blob-report/
 
 # IDEs and Editors
 .vscode/
@@ -36,14 +49,50 @@ nosetests.xml
 # OS Specific
 .DS_Store
 Thumbs.db
+Desktop.ini
 
 # Project Specific Runtime Outputs
 logs/
 captures/
 reports/
+# Local audit reports, validation data and screenshots.
+/audit/
+# Keep exported runtime files out of the repository root while allowing
+# intentionally versioned fixtures in subdirectories.
+/*.log
+/*.log.[0-9]*
+/*.pcap
+/*.pcapng
+/*.cap
+# Dashboard index state and SQLite sidecars.
+.index/
+/*.sqlite
+/*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+.preferences-*.tmp
 
 # Private Config
 .env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+.envrc
 config/config.yaml
+config/config.yml
+config/*.local.yaml
+config/*.local.yml
+*.key
+*.pem
+*.p12
+*.pfx
 
-.agents
+# Local Agent and Cloud State
+.agents/
+.codex/
+.aws/

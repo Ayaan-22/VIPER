@@ -1,182 +1,119 @@
-"""
-anomaly.py
-----------
-Statistical anomaly detector using a rolling mean ± N·σ baseline.
-
-How it works
-------------
-1. During the *baseline phase* (first ``min_samples`` packets per src),
-   the detector silently accumulates packet sizes and inter-arrival times
-   to build a statistical profile.
-2. After the baseline is established, every new packet is scored against
-   the profile.  If the observed metric deviates by more than
-   ``deviation_factor`` standard deviations from the mean, an alert fires.
-
-Two signals are monitored per source IP:
-  * **Packet size** – very large or very small packets can indicate
-    tunnelling, fragmentation attacks, or malformed traffic.
-  * **Packet rate** – sudden rate spikes beyond the learnt baseline
-    suggest volumetric attacks or scanning.
-
-Limitations
------------
-This is a *lightweight* statistical model (no ML library required).
-It can produce false positives during warm-up or for highly variable
-legitimate traffic.  Tune ``deviation_factor`` and ``min_samples``
-in config.yaml to balance sensitivity vs. noise.
-"""
-
+"""Bounded rolling trusted baseline; anomalous samples do not train the model."""
 from __future__ import annotations
 
 import math
-import time
 import threading
-from collections import defaultdict
-from typing import Dict, List
-
-from scapy.layers.inet import IP
-from scapy.packet import Packet
-
+from collections import OrderedDict, deque
 from src.alerting.alert import Severity
-from src.alerting.handler import AlertHandler
-from src.core.sliding_window import SlidingWindowDict
+from src.core.traffic import event_time, network_layer
 from src.detectors.base import BaseDetector
 
 
 class _RunningStats:
-    """
-    Welford's online algorithm for running mean and variance.
-    O(1) per update, numerically stable.
-    """
-
-    __slots__ = ("n", "mean", "_M2")
-
     def __init__(self):
-        self.n: int = 0
-        self.mean: float = 0.0
-        self._M2: float = 0.0
+        self.n, self.mean, self._M2 = 0, 0.0, 0.0
 
-    def update(self, x: float) -> None:
+    def update(self, x):
         self.n += 1
         delta = x - self.mean
         self.mean += delta / self.n
         self._M2 += delta * (x - self.mean)
 
+    def remove(self, x):
+        if self.n <= 1:
+            self.n, self.mean, self._M2 = 0, 0.0, 0.0
+            return
+        mean = (self.mean * self.n - x) / (self.n - 1)
+        self._M2 = max(0.0, self._M2 - (x - self.mean) * (x - mean))
+        self.mean = mean
+        self.n -= 1
+
     @property
-    def variance(self) -> float:
+    def variance(self):
         return self._M2 / self.n if self.n > 1 else 0.0
 
     @property
-    def std(self) -> float:
+    def std(self):
         return math.sqrt(self.variance)
 
-    def z_score(self, x: float) -> float:
-        if self.std == 0:
-            if self.n > 0 and x != self.mean:
-                return math.inf
-            return 0.0
-        return abs(x - self.mean) / self.std
+    def z_score(self, x):
+        return abs(x - self.mean) / self.std if self.std else (math.inf if self.n and x != self.mean else 0.0)
 
 
 class _SourceProfile:
     def __init__(self):
         self.size_stats = _RunningStats()
-        self.last_ts: float = time.monotonic()
-        self.iat_stats = _RunningStats()     # inter-arrival time
+        self.iat_stats = _RunningStats()
+        self.last_ts = None
+        self.samples = deque()
         self.lock = threading.Lock()
+
+    def remove_oldest(self):
+        _, size, iat = self.samples.popleft()
+        self.size_stats.remove(size)
+        if iat is not None:
+            self.iat_stats.remove(iat)
 
 
 class AnomalyDetector(BaseDetector):
     name = "anomaly"
 
-    def __init__(self, cfg: dict, handler: AlertHandler):
+    def __init__(self, cfg, handler):
         super().__init__(cfg, handler, whitelist=cfg.get("whitelist_ips", []))
-        self._deviation_factor: float = cfg.get("deviation_factor", 3.0)
-        self._min_samples: int = cfg.get("min_samples", 20)
-        self._baseline_window: float = cfg.get("baseline_window_seconds", 60)
-        self._profiles: Dict[str, _SourceProfile] = defaultdict(_SourceProfile)
-        self._profiles_lock = threading.Lock()   # guards dict-level mutation
-        self._throttle = SlidingWindowDict(10)   # alert at most once per 10 s per src
-        
-        self._cleanup_interval: float = 60.0
-        self._last_cleanup: float = time.monotonic()
+        self._deviation_factor = cfg.get("deviation_factor", 3.0)
+        self._min_samples = cfg.get("min_samples", 20)
+        self._baseline_window = cfg.get("baseline_window_seconds", 60)
+        self._max_samples = cfg.get("max_baseline_samples", 512)
+        self._max_profiles = cfg.get("max_state_keys", 2048)
+        self._profiles = OrderedDict()
+        self._profiles_lock = self._state_lock
+        self._throttle = self.throttle(10)
+        self._evictions = 0
+        self._late = 0
 
-    def _maybe_cleanup(self, now: float) -> None:
-        """Evict stale profiles to prevent memory leaks from inactive or spoofed IPs.
-
-        Must be called while holding ``self._profiles_lock``.
-        """
-        self._last_cleanup = now
-        # Evict if inactive for 2x the baseline window (min 60s)
-        stale_threshold = now - max(self._baseline_window * 2, 60.0)
-        stale_keys = [
-            ip for ip, profile in self._profiles.items() 
-            if profile.last_ts < stale_threshold
-        ]
-        for ip in stale_keys:
-            del self._profiles[ip]
-
-    def process(self, packet: Packet) -> None:
-        if not self.enabled:
+    def process(self, packet):
+        net = network_layer(packet)
+        if not self.enabled or net is None or self.is_whitelisted(net.src):
             return
-            
-        now = time.monotonic()
-
-        if not packet.haslayer(IP):
-            return
-
-        src_ip = packet[IP].src
-        if self.is_whitelisted(src_ip):
-            return
-
-        pkt_len = len(packet)
-        now = time.monotonic()
-
-        # Acquire dict-level lock for profile lookup/creation and cleanup
+        now, size = event_time(packet), len(packet)
+        anomalies = []
         with self._profiles_lock:
-            if now - self._last_cleanup > self._cleanup_interval:
-                self._maybe_cleanup(now)
-            profile = self._profiles[src_ip]
-
-        with profile.lock:
-            iat = now - profile.last_ts
-            profile.last_ts = now
-
-            n = profile.size_stats.n
-
-            # --- still in baseline phase ---
-            if n < self._min_samples:
-                profile.size_stats.update(pkt_len)
-                profile.iat_stats.update(iat)
+            if net.src not in self._profiles:
+                if len(self._profiles) >= self._max_profiles:
+                    self._profiles.popitem(last=False)
+                    self._evictions += 1
+                self._profiles[net.src] = _SourceProfile()
+            profile = self._profiles[net.src]
+            self._profiles.move_to_end(net.src)
+            if profile.last_ts is not None and now < profile.last_ts:
+                self._late += 1
                 return
+            while profile.samples and profile.samples[0][0] < now - self._baseline_window:
+                profile.remove_oldest()
+            iat = None if profile.last_ts is None else now - profile.last_ts
+            profile.last_ts = now
+            n = profile.size_stats.n
+            if n >= self._min_samples:
+                if profile.size_stats.z_score(size) > self._deviation_factor:
+                    anomalies.append(f"packet size {size} B outside trusted baseline (mean {profile.size_stats.mean:.0f} B)")
+                if (iat is not None and profile.iat_stats.n >= self._min_samples and
+                        iat < 0.001 and profile.iat_stats.z_score(iat) > self._deviation_factor):
+                    anomalies.append("inter-arrival time outside trusted baseline")
+            if not anomalies:
+                while len(profile.samples) >= self._max_samples:
+                    profile.remove_oldest()
+                profile.samples.append((now, size, iat))
+                profile.size_stats.update(size)
+                if iat is not None:
+                    profile.iat_stats.update(iat)
+            fire = anomalies and self._throttle.acquire(net.src, now)
+        if fire:
+            self.emit_packet(packet, severity=Severity.MEDIUM,
+                             message="Anomalous traffic pattern: " + "; ".join(anomalies),
+                             anomalies=anomalies, samples=n, baseline_policy="rolling_trusted",
+                             baseline_window_seconds=self._baseline_window)
 
-            # --- check for anomalies (inside lock for consistency) ---
-            anomalies: List[str] = []
-
-            size_z = profile.size_stats.z_score(pkt_len)
-            if size_z > self._deviation_factor:
-                anomalies.append(
-                    f"pkt_size={pkt_len}B (mean={profile.size_stats.mean:.0f}, "
-                    f"z={size_z:.1f})"
-                )
-
-            iat_z = profile.iat_stats.z_score(iat)
-            if iat_z > self._deviation_factor and iat < 0.001:
-                # Very fast arrival (possible burst) is more interesting than slow
-                anomalies.append(
-                    f"iat={iat*1000:.2f}ms (mean={profile.iat_stats.mean*1000:.2f}ms, "
-                    f"z={iat_z:.1f})"
-                )
-
-            profile.size_stats.update(pkt_len)
-            profile.iat_stats.update(iat)
-
-        if anomalies and self._throttle.count(src_ip) == 0:
-            self._throttle.add(src_ip)
-            self.emit(
-                severity=Severity.MEDIUM,
-                src_ip=src_ip,
-                message=f"Anomalous traffic pattern: {'; '.join(anomalies)}",
-                anomalies=anomalies,
-                samples=n,
-            )
+    @property
+    def health(self):
+        return {**super().health, "profile_evictions": self._evictions,
+                "late_packets": self._late, "profiles": len(self._profiles)}

@@ -241,7 +241,7 @@ class DashboardConfigTests(unittest.TestCase):
             from src.utils.config_loader import load_config
         except ImportError:
             self.skipTest("PyYAML is not installed")
-        cfg = load_config(path="/nonexistent/path.yaml")
+        cfg = load_config(path="/nonexistent/path.yaml", allow_defaults=True)
         self.assertEqual(cfg.dashboard["port"], 5000)
         self.assertEqual(cfg.analytics["suspicious_group_window_seconds"], 120)
 

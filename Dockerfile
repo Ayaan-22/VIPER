@@ -1,67 +1,27 @@
-# ─── Stage 1: Build ──────────────────────────────────────────────────────────
-FROM python:3.11-slim-bookworm AS builder
+# Official multi-platform Python image, resolved from Docker Hub on 2026-11-01.
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337
+FROM ${PYTHON_IMAGE} AS builder
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /build
+COPY requirements-runtime.lock ./
+RUN pip install --no-cache-dir --require-hashes --prefix=/install -r requirements-runtime.lock
 
-# Set build-time environment variables
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
+FROM ${PYTHON_IMAGE} AS runner
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app MPLCONFIGDIR=/tmp/matplotlib
 WORKDIR /app
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libpcap-dev \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
-
-# ─── Stage 2: Runtime ────────────────────────────────────────────────────────
-FROM python:3.11-slim-bookworm AS runner
-
-# Metadata
-LABEL maintainer="Ayaan-22"
-LABEL description="VIPER Vision – Network Intrusion Detection and Visualization Platform"
-
-# Environment variables
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONPATH="/app:${PYTHONPATH}"
-
-WORKDIR /app
-
-# Install runtime dependencies only
-# - libpcap0.8: required for Scapy context
-# - iproute2: networking tools
-# - tcpdump: packet analysis
-# - procps: process monitoring for healthchecks
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpcap0.8 \
-    iproute2 \
-    tcpdump \
-    procps \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy installed python packages from builder
+RUN apt-get update && apt-get install -y --no-install-recommends libpcap0.8 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 10001 --create-home --shell /usr/sbin/nologin viperuser
 COPY --from=builder /install /usr/local
-
-# Copy application code
-COPY . .
-
-# Create necessary directories
-RUN mkdir -p logs reports captures
-
-# Set up a non-root user (available for dashboard service)
-RUN useradd -m -s /bin/bash viperuser && \
-    chown -R viperuser:viperuser /app
-
-# Expose VIPER Vision dashboard port
+# Explicit allow-list: private configuration and runtime evidence cannot be copied.
+COPY main.py ./
+COPY src ./src
+COPY dashboard ./dashboard
+COPY tools/healthcheck.py ./tools/healthcheck.py
+COPY config/config.example.yaml ./config/config.example.yaml
+RUN mkdir -p logs reports captures && chown -R viperuser:viperuser reports
 EXPOSE 5000
-
-# Healthcheck to ensure the main process is running
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD pgrep -f "python" || exit 1
-
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD ["python", "tools/healthcheck.py", "--log", "logs/nids.log"]
 ENTRYPOINT ["python", "main.py"]
 CMD ["--interface", "eth0"]

@@ -358,32 +358,203 @@ class TestPortScanDetector(unittest.TestCase):
         self.assertEqual(len(h.history), 0)
 
 
-class TestSynFloodDetector(unittest.TestCase):
+class _FloodDetectorBehaviorTests:
+    """Run the same observable contract against each public flood detector."""
 
-    def test_fires_when_rate_exceeded(self):
-        from src.detectors.flood_detectors import SynFloodDetector
-        cfg = {"enabled": True, "packets_per_second": 5, "window_seconds": 1, "whitelist_ips": []}
-        h = _silent_handler()
-        det = SynFloodDetector(cfg, h)
+    def setUp(self):
+        # Keep real sliding windows, with deterministic time and no sleeps.
+        clock_patch = patch("src.core.sliding_window.time.monotonic", return_value=100.0)
+        self.clock = clock_patch.start()
+        self.addCleanup(clock_patch.stop)
 
-        # Send 20 SYN packets quickly
-        for _ in range(20):
-            pkt = _make_packet("2.2.2.2", flags=0x02)
-            det.process(pkt)
+    def _make_detector(self, cfg=None):
+        from src.detectors import flood_detectors
+        handler = _silent_handler()
+        self.addCleanup(handler.shutdown)
+        detector = getattr(flood_detectors, self.detector_class)(
+            {} if cfg is None else cfg, handler
+        )
+        return detector, handler
 
-        self.assertGreater(len(h.history), 0)
+    def _packet(self, src_ip="2.2.2.2"):
+        return _make_packet(src_ip, proto=self.protocol)
 
-    def test_non_syn_ignored(self):
-        from src.detectors.flood_detectors import SynFloodDetector
-        cfg = {"enabled": True, "packets_per_second": 5, "window_seconds": 1, "whitelist_ips": []}
-        h = _silent_handler()
-        det = SynFloodDetector(cfg, h)
+    def test_defaults_and_detector_identity(self):
+        det, handler = self._make_detector()
+        packet = self._packet()
+        for _ in range(99):
+            det.process(packet)
+        self.assertEqual(handler.history, [])
 
-        for _ in range(20):
-            pkt = _make_packet("2.2.2.2", flags=0x10)  # ACK flag
-            det.process(pkt)
+        det.process(packet)
+        self.assertEqual(len(handler.history), 1)
+        alert = handler.history[0]
+        self.assertEqual(det.name, self.detector_name)
+        self.assertEqual(alert.detector, self.detector_name)
+        self.assertEqual(alert.severity, Severity.HIGH)
+        self.assertEqual(alert.src_ip, "2.2.2.2")
+        self.assertEqual(alert.dst_ip, "10.0.0.1")
+        self.assertEqual(alert.dst_port, 80 if self.protocol in {"TCP", "UDP"} else None)
+        self.assertEqual(alert.message, f"{self.label} flood: 100 pkt/s (threshold 100)")
+        self.assertEqual(alert.metadata["rate_pps"], 100.0)
+        self.assertEqual(alert.metadata["threshold_pps"], 100)
+        self.assertEqual(alert.metadata["protocol"], self.protocol)
+        self.assertEqual(det.alert_count, 1)
 
-        self.assertEqual(len(h.history), 0)
+    def test_configured_threshold_and_window(self):
+        cfg = {"enabled": True, "packets_per_second": 2.5,
+               "window_seconds": 2, "whitelist_ips": []}
+        det, handler = self._make_detector(cfg)
+        packet = self._packet()
+        for _ in range(4):
+            det.process(packet)
+        self.assertEqual(handler.history, [])
+        det.process(packet)
+        self.assertEqual(len(handler.history), 1)
+        alert = handler.history[0]
+        self.assertEqual(alert.severity, Severity.HIGH)
+        self.assertEqual(alert.message, f"{self.label} flood: 2 pkt/s (threshold 2.5)")
+        self.assertEqual(alert.metadata["rate_pps"], 2.5)
+        self.assertEqual(alert.metadata["window_seconds"], 2)
+
+    def test_threshold_and_severity_boundaries(self):
+        for count, expected in ((7, None), (8, Severity.HIGH), (15, Severity.HIGH), (16, Severity.CRITICAL)):
+            with self.subTest(count=count):
+                det, handler = self._make_detector({"packets_per_second": 8})
+                # Reserve the throttle during accumulation, then release via time.
+                for _ in range(count - 1):
+                    det._windows.add("2.2.2.2", ts=100.0)
+                det.process(self._packet())
+                self.assertEqual(len(handler.history), int(expected is not None))
+                if expected:
+                    self.assertEqual(handler.history[0].severity, expected)
+
+    def test_message_and_metadata_rounding(self):
+        det, handler = self._make_detector({"packets_per_second": 1, "window_seconds": 0.3})
+        det.process(self._packet())
+        self.assertEqual(len(handler.history), 1)
+        alert = handler.history[0]
+        self.assertEqual(alert.message, f"{self.label} flood: 3 pkt/s (threshold 1)")
+        self.assertEqual(alert.metadata["rate_pps"], 3.3)
+        self.assertEqual(alert.severity, Severity.CRITICAL)
+
+    def test_disabled_packets_are_not_counted(self):
+        det, handler = self._make_detector({"enabled": False, "packets_per_second": 1})
+        det.process(self._packet())
+        self.assertEqual(handler.history, [])
+        self.assertEqual(det._windows.keys(), [])
+        self.assertEqual(det._throttle.keys(), [])
+
+    def test_whitelisted_packets_are_not_counted(self):
+        det, handler = self._make_detector({"packets_per_second": 1,
+                                            "whitelist_ips": ["2.2.2.2"]})
+        det.process(self._packet())
+        self.assertEqual(handler.history, [])
+        self.assertEqual(det._windows.keys(), [])
+        self.assertEqual(det._throttle.keys(), [])
+        det.process(self._packet("3.3.3.3"))
+        self.assertEqual([alert.src_ip for alert in handler.history], ["3.3.3.3"])
+
+    def test_wrong_protocol_and_missing_ip_are_not_counted(self):
+        from scapy.layers.inet import IP
+        det, handler = self._make_detector({"packets_per_second": 1})
+        for protocol in ("TCP", "UDP", "ICMP"):
+            if protocol != self.protocol:
+                det.process(_make_packet("2.2.2.2", proto=protocol))
+        packet = self._packet()
+        has_layer = packet.haslayer
+        packet.haslayer = lambda layer: layer is not IP and has_layer(layer)
+        det.process(packet)
+        self.assertEqual(handler.history, [])
+        self.assertEqual(det._windows.keys(), [])
+        self.assertEqual(det._throttle.keys(), [])
+
+    def test_source_rates_are_independent(self):
+        det, handler = self._make_detector({"packets_per_second": 2})
+        det.process(self._packet("2.2.2.2"))
+        det.process(self._packet("3.3.3.3"))
+        self.assertEqual(handler.history, [])
+        det.process(self._packet("2.2.2.2"))
+        self.assertEqual([alert.src_ip for alert in handler.history], ["2.2.2.2"])
+
+    def test_five_second_throttle_is_per_source_and_not_extended(self):
+        det, handler = self._make_detector({"packets_per_second": 0.1,
+                                            "window_seconds": 10})
+        packet = self._packet()
+        det.process(packet)
+        self.assertEqual(len(handler.history), 1)
+        self.clock.return_value = 104.0
+        det.process(packet)
+        det.process(self._packet("3.3.3.3"))
+        self.assertEqual([alert.src_ip for alert in handler.history],
+                         ["2.2.2.2", "3.3.3.3"])
+        self.clock.return_value = 105.0
+        det.process(packet)  # Timestamp at exactly the cutoff still counts.
+        self.assertEqual(len(handler.history), 2)
+        self.clock.return_value = 105.001
+        det.process(packet)
+        self.assertEqual([alert.src_ip for alert in handler.history],
+                         ["2.2.2.2", "3.3.3.3", "2.2.2.2"])
+        # All four packets count, including the two whose alerts were suppressed.
+        self.assertEqual(handler.history[-1].metadata["rate_pps"], 0.4)
+        self.assertEqual(handler.history[-1].metadata["threshold_pps"], 0.1)
+        self.assertEqual(det.alert_count, 3)
+
+    def test_configured_window_expiry_includes_exact_boundary(self):
+        for elapsed, expected_alerts in ((2.0, 1), (2.001, 0)):
+            with self.subTest(elapsed=elapsed):
+                self.clock.return_value = 100.0
+                det, handler = self._make_detector({"packets_per_second": 2,
+                                                    "window_seconds": 2})
+                for _ in range(3):
+                    det.process(self._packet())
+                self.assertEqual(handler.history, [])
+                self.clock.return_value += elapsed
+                det.process(self._packet())
+                self.assertEqual(len(handler.history), expected_alerts)
+
+    def test_detector_instances_have_independent_state(self):
+        first, first_handler = self._make_detector({"packets_per_second": 2})
+        second, second_handler = self._make_detector({"packets_per_second": 2})
+        packet = self._packet()
+        first.process(packet)
+        second.process(packet)
+        self.assertEqual(first_handler.history, [])
+        self.assertEqual(second_handler.history, [])
+        first.process(packet)
+        second.process(packet)
+        self.assertEqual(len(first_handler.history), 1)
+        self.assertEqual(len(second_handler.history), 1)
+
+
+class TestSynFloodDetector(_FloodDetectorBehaviorTests, unittest.TestCase):
+    detector_class = "SynFloodDetector"
+    detector_name = "syn_flood"
+    protocol = "TCP"
+    label = "SYN"
+
+    def test_syn_without_ack_rst_fin_is_counted(self):
+        det, handler = self._make_detector({"packets_per_second": 1})
+        for flags in (0x00, 0x01, 0x04, 0x10, 0x12, 0x03, 0x22):
+            det.process(_make_packet("2.2.2.2", flags=flags))
+        self.assertEqual(handler.history, [])
+        self.assertEqual(det._windows.keys(), [])
+        det.process(_make_packet("2.2.2.2", flags=0x02))
+        self.assertEqual(len(handler.history), 1)
+
+
+class TestUdpFloodDetector(_FloodDetectorBehaviorTests, unittest.TestCase):
+    detector_class = "UdpFloodDetector"
+    detector_name = "udp_flood"
+    protocol = "UDP"
+    label = "UDP"
+
+
+class TestIcmpFloodDetector(_FloodDetectorBehaviorTests, unittest.TestCase):
+    detector_class = "IcmpFloodDetector"
+    detector_name = "icmp_flood"
+    protocol = "ICMP"
+    label = "ICMP"
 
 
 class TestBruteForceDetector(unittest.TestCase):
@@ -521,70 +692,6 @@ class TestAlertRoundTrip(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# §3.6 — UDP Flood Detector tests
-# ---------------------------------------------------------------------------
-
-class TestUdpFloodDetector(unittest.TestCase):
-
-    def test_fires_when_rate_exceeded(self):
-        from src.detectors.flood_detectors import UdpFloodDetector
-        cfg = {"enabled": True, "packets_per_second": 5, "window_seconds": 1, "whitelist_ips": []}
-        h = _silent_handler()
-        det = UdpFloodDetector(cfg, h)
-
-        for _ in range(20):
-            pkt = _make_packet("4.4.4.4", proto="UDP")
-            det.process(pkt)
-
-        self.assertGreater(len(h.history), 0)
-        self.assertEqual(h.history[0].detector, "udp_flood")
-
-    def test_non_udp_ignored(self):
-        from src.detectors.flood_detectors import UdpFloodDetector
-        cfg = {"enabled": True, "packets_per_second": 5, "window_seconds": 1, "whitelist_ips": []}
-        h = _silent_handler()
-        det = UdpFloodDetector(cfg, h)
-
-        for _ in range(20):
-            pkt = _make_packet("4.4.4.4", proto="TCP", flags=0x02)
-            det.process(pkt)
-
-        self.assertEqual(len(h.history), 0)
-
-
-# ---------------------------------------------------------------------------
-# §3.6 — ICMP Flood Detector tests
-# ---------------------------------------------------------------------------
-
-class TestIcmpFloodDetector(unittest.TestCase):
-
-    def test_fires_when_rate_exceeded(self):
-        from src.detectors.flood_detectors import IcmpFloodDetector
-        cfg = {"enabled": True, "packets_per_second": 5, "window_seconds": 1, "whitelist_ips": []}
-        h = _silent_handler()
-        det = IcmpFloodDetector(cfg, h)
-
-        for _ in range(20):
-            pkt = _make_packet("5.5.5.5", proto="ICMP")
-            det.process(pkt)
-
-        self.assertGreater(len(h.history), 0)
-        self.assertEqual(h.history[0].detector, "icmp_flood")
-
-    def test_non_icmp_ignored(self):
-        from src.detectors.flood_detectors import IcmpFloodDetector
-        cfg = {"enabled": True, "packets_per_second": 5, "window_seconds": 1, "whitelist_ips": []}
-        h = _silent_handler()
-        det = IcmpFloodDetector(cfg, h)
-
-        for _ in range(20):
-            pkt = _make_packet("5.5.5.5", proto="TCP", flags=0x02)
-            det.process(pkt)
-
-        self.assertEqual(len(h.history), 0)
-
-
-# ---------------------------------------------------------------------------
 # §3.6 — AnomalyDetector tests
 # ---------------------------------------------------------------------------
 
@@ -711,7 +818,7 @@ class TestConfigLoader(unittest.TestCase):
 
     def test_defaults_loaded_without_file(self):
         from src.utils.config_loader import load_config
-        cfg = load_config(path="/nonexistent/path.yaml")
+        cfg = load_config(path="/nonexistent/path.yaml", allow_defaults=True)
         self.assertEqual(cfg.detection["syn_flood"]["packets_per_second"], 100)
 
     def test_override_applied(self):
@@ -731,7 +838,7 @@ class TestConfigLoader(unittest.TestCase):
 
     def test_set_updates_nested_config(self):
         from src.utils.config_loader import load_config
-        cfg = load_config(path="/nonexistent/path.yaml")
+        cfg = load_config(path="/nonexistent/path.yaml", allow_defaults=True)
         cfg.set("logging", "level", value="DEBUG")
         self.assertEqual(cfg.logging["level"], "DEBUG")
 
@@ -792,7 +899,7 @@ class TestEngineWiring(unittest.TestCase):
         from src.core.engine import NIDSEngine
         from src.utils.config_loader import load_config
 
-        cfg = load_config(path="/nonexistent/path.yaml")
+        cfg = load_config(path="/nonexistent/path.yaml", allow_defaults=True)
         for name in ("port_scan", "syn_flood", "udp_flood", "icmp_flood", "brute_force", "anomaly"):
             cfg.set("detection", name, "enabled", value=False)
         cfg.set("detection", "port_scan", "enabled", value=True)

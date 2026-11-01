@@ -88,6 +88,7 @@ class Alert:
         reserves for its own use in LogRecord extra dicts.
         """
         return {
+            **{key: value for key, value in self.metadata.items() if key not in {"message", "asctime", "msg", "args", "levelname", "levelno", "name", "pathname", "filename", "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName", "created", "msecs", "relativeCreated", "thread", "threadName", "processName", "process"}},
             "alert_id":      self.alert_id,
             "ts":            self.timestamp,
             "detector":      self.detector,
@@ -96,7 +97,6 @@ class Alert:
             "dst_ip":        self.dst_ip,
             "dst_port":      self.dst_port,
             "alert_message": self.message,   # renamed to avoid LogRecord collision
-            **self.metadata,
         }
 
     def __str__(self) -> str:

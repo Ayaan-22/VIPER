@@ -9,6 +9,8 @@
 **Size:** ~3,850 lines of Python across 30 files.
 **Method:** `git diff 967b1c8 a53151e` to scope exactly what changed, direct re-reading of every touched module to verify each prior finding's fix, `pytest --cov` execution against the current test suite, targeted repro of the new auth/path-validation code (including checking whether `flask_sock`'s WebSocket routes actually pass through Flask's `before_request` hook — verified by reading `flask_sock`'s source directly rather than assuming).
 
+**Follow-up status (2026-10-28):** The repeated flood-detector duplication finding (§2, row 3.7) is closed by the shared implementation and regression coverage described in §6. The executive summary and original counts below describe the audited baseline.
+
 ---
 
 ## 1. Executive Summary
@@ -44,12 +46,12 @@ Every finding was re-checked directly against the diff and the resulting code.
 | 3.4 | `engine.py`, `reporter.py`, `pcap_writer.py` at 0% test coverage | 🟡 Medium | ✅ **Substantially improved** | Coverage: `engine.py` 0%→43%, `reporter.py` 0%→48%, `pcap_writer.py` 0%→47%. Three new, specifically-targeted tests were added: `TestEngineWiring::test_register_detectors_respects_enabled_config`, `TestReporter::test_report_filenames_do_not_collide`, `TestPcapWriter::test_cleanup_old_files_keeps_newest_captures`. These aren't full coverage, but they land directly on the logic this audit and the last one were most concerned about (config-driven detector wiring, filename collisions, retention cleanup). Remaining gaps are mostly in code paths that need a live Scapy `sniff()` session or signal handling, which are reasonably deferred. See §3.4 below. |
 | 3.5 | Unbounded thread spawning for email/webhook alert delivery | 🟡 Medium | ✅ **Fixed** | `AlertHandler` now uses a `concurrent.futures.ThreadPoolExecutor` (default 4 workers, configurable via `max_delivery_workers`) plus a `threading.BoundedSemaphore` acting as a queue-depth cap (`max_delivery_workers + max_delivery_queue`, default 100). When the semaphore is full, new deliveries are dropped with a logged warning instead of spawning an unbounded thread. Covered by `test_async_delivery_is_bounded`. A `shutdown()` method was also added for graceful executor teardown. |
 | 3.6 | Docker build disables APT repository freshness/signature-date validation | 🔵 Low | ✅ **Fixed** | Both `Acquire::Check-Valid-Until`/`Check-Date` overrides were removed from both Dockerfile stages entirely, rather than just documented. |
-| 3.7 | Three near-duplicate flood detector classes | 🔵 Low | ❌ **Still open** | `src/detectors/flood_detectors.py` is untouched in this diff. Now flagged in all three audits; still genuinely low-priority (maintainability, not correctness), but worth scheduling given the repeat flags. |
+| 3.7 | Three near-duplicate flood detector classes | 🔵 Low | ✅ **Fixed (2026-10-28 follow-up)** | `src/detectors/flood_detectors.py` now shares initialization, filtering, per-source rate accounting, severity, throttling, and alert emission through a private base class. Public detector classes, names, config, and emitted fields remain compatible. Deterministic regression tests cover all three protocols; see §6. |
 | 3.8 | Severity strings from config not validated before enum lookup | 🔵 Low | ✅ **Fixed** | Two layers now: `config_loader.py::_validate_config()` runs at config-load time and raises a clear `ValueError` for a bad `severity_filter`/`min_severity` string (fail-fast, e.g. `python main.py` exits immediately with a readable error rather than crashing later on the first alert). Independently, `handler.py::_parse_severity()` normalizes case and falls back to a safe default with a logged warning if it's ever called with a raw dict that skipped config validation (e.g. constructed directly in a test or embedding script). Covered by `test_invalid_severity_config_fails_clearly` and `test_severity_filter_accepts_lowercase`. |
 | 3.9 | `main.py` mutates `Config._data` directly | 🔵 Low | ✅ **Fixed** | `Config` now has a public `set(*keys, value)` method that walks/creates nested dicts; `main.py` uses `cfg.set("logging", "level", value=args.log_level)` instead of reaching into `_data`. Covered by `test_set_updates_nested_config`. |
 | 3.10 | Report/visualisation filenames collide at second resolution | 🔵 Low | ✅ **Fixed** | A shared `_unique_report_path()` helper appends `time.time_ns()` to every report/chart filename in `reporter.py`; `pcap_writer.py` and `report_service.py`'s HTML report got the identical treatment. README's example filenames were updated to match. Covered by `test_report_filenames_do_not_collide`. |
 
-**Net: 8 of 8 High/Medium findings fixed, 3 of 4 Low findings fixed.** Only the flood-detector duplication item remains, unchanged in priority since it was first flagged.
+**At the audited baseline: 8 of 8 High/Medium findings fixed, 3 of 4 Low findings fixed.** The remaining prior Low finding, flood-detector duplication, was subsequently closed in the §6 follow-up.
 
 ---
 
@@ -122,11 +124,23 @@ If `log_path` is passed as a bare filename with no directory component and no le
 
 ## 5. Recommendations
 
-1. The three new Low items (§3) are all quick, contained fixes — good candidates for a small follow-up commit alongside the still-open flood-detector consolidation (§2, row 3.7).
+1. The three new Low items (§3) are all quick, contained fixes — good candidates for a small follow-up commit. The flood-detector consolidation (§2, row 3.7) is completed in the §6 follow-up.
 2. Consider moving the "no host binding without a key" enforcement into `create_app()` itself (§3.1) so it protects any caller, not just the two current CLI entry points.
 3. Continue closing the remaining coverage gaps in `engine.py` (`sniff()`-adjacent paths can be tested by mocking `scapy.all.sniff`), `reporter.py` (matplotlib-dependent chart functions can be tested for "doesn't raise" even without pixel-level assertions), and `pcap_writer.py` (the write loop itself, beyond the now-tested cleanup logic).
 4. No urgent security work remains from this pass — the codebase's security-relevant surface (dashboard auth, path validation, severity parsing, delivery bounding) is now in a solid state across all three audits' worth of findings.
 
 ---
 
-*This audit reflects a point-in-time review of commit `a53151e`, cross-verified against the findings of both prior audits (`967b1c8` and `370ef98`). Every "fixed" determination in §2 was confirmed by reading the current implementation and its accompanying test directly.*
+*The original audit reflects a point-in-time review of commit `a53151e`, cross-verified against the findings of both prior audits (`967b1c8` and `370ef98`). Follow-up remediation is dated separately below.*
+
+## 6. Follow-up Remediation — Flood Detector Duplication (2026-10-28)
+
+**Finding:** §2, row 3.7, repeated across all three audits. **Status: Closed.**
+
+`src/detectors/flood_detectors.py` now implements the common flood-detection path once in a private base class. `SynFloodDetector`, `UdpFloodDetector`, and `IcmpFloodDetector` retain their public identities and protocol labels; the SYN subclass retains the exact SYN-only flag check (`0x02`).
+
+The existing config keys and defaults are preserved: `enabled=True`, `packets_per_second=100`, `window_seconds=1`, and `whitelist_ips=[]`. Rate accounting still uses `SlidingWindowDict`; alerts start at `rate >= threshold`, become CRITICAL at `rate >= 2 * threshold`, and use the same per-source five-second throttle. Message formatting and `rate_pps`/`threshold_pps` metadata are unchanged.
+
+Regression coverage in `tests/test_detectors.py` checks all three public detectors with a deterministic clock and the real sliding windows: defaults and overrides, packet/whitelist/disabled filtering, threshold and severity boundaries, exact alert fields and rounding, window expiry, per-source and per-instance isolation, and throttle suppression/expiry while traffic continues to be counted.
+
+**Validation:** All 34 flood regression tests passed against the original implementation before refactoring (`python -m pytest tests/test_detectors.py -q`: 76 passed). After refactoring, `python -m pytest -q` passed the full suite: **90 passed**, with four existing missing-config warnings. `git diff --check` passed.

@@ -1,95 +1,80 @@
 services:
-  # ─── NIDS Sensor (Detection Engine) ─────────────────────────────────────────
   nids:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: viper-sensor
-    image: viper-nids:latest
+    build: .
+    image: viper-nids:local
     restart: unless-stopped
-    init: true # Ensures proper handling of signals (SIGINT, SIGTERM)
-    
-    # Required for Scapy packet sniffing
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-    
-    # Host networking allows the container to 'see' real network traffic on the host
+    init: true
+    stop_grace_period: 90s
+    cap_drop: [ALL]
+    # Root capture also needs artifact-volume writes across host UID ownership.
+    cap_add: [NET_ADMIN, NET_RAW, DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
     network_mode: host
-    
-    environment:
-      - PYTHONUNBUFFERED=1
-      - LOG_LEVEL=INFO
-    
+    read_only: true
+    tmpfs: [/tmp:size=128m]
     volumes:
       - ./config:/app/config:ro
       - ./logs:/app/logs
       - ./captures:/app/captures
-      - ./reports:/app/reports
-    
+      - reports-data:/app/reports
     command: ["--interface", "eth0", "--log-level", "INFO"]
-    
-    # Production Logging: keeps log files manageable
     logging:
-      driver: "json-file"
-      options:
-        max-size: "10mb"
-        max-file: "3"
+      driver: json-file
+      options: {max-size: 10mb, max-file: "3"}
 
-  # ─── Dashboard (Web Interface) ──────────────────────────────────────────────
   dashboard:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: viper-dashboard
-    image: viper-dashboard:latest
+    build: .
+    image: viper-nids:local
     restart: unless-stopped
-    
-    # Security: Run as non-privileged user
-    user: viperuser
-    
-    # Networking: Standard bridge for the web UI
-    ports:
-      - "127.0.0.1:5000:5000"
-    
+    init: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp:size=64m]
+    ports: ["127.0.0.1:5000:5000"]
     depends_on:
       nids:
         condition: service_started
-    
     volumes:
       - ./logs:/app/logs:ro
-    
+      - ./captures:/app/captures:ro
+      - reports-data:/app/reports
     environment:
-      - PYTHONUNBUFFERED=1
-      - VIPER_DASHBOARD_API_KEY=${VIPER_DASHBOARD_API_KEY:?Set VIPER_DASHBOARD_API_KEY before starting the dashboard}
-    
-    entrypoint: ["python", "dashboard/app.py"]
+      VIPER_DASHBOARD_API_KEY: ${VIPER_DASHBOARD_API_KEY:?Set VIPER_DASHBOARD_API_KEY}
+    entrypoint: [python, dashboard/app.py]
     command: ["--log", "/app/logs/nids.log", "--host", "0.0.0.0", "--port", "5000", "--captures", "/app/captures", "--reports", "/app/reports"]
-    
-    # Healthcheck to verify dashboard is reachable
     healthcheck:
-      test: ["CMD", "python", "-c", "import os, urllib.request; req = urllib.request.Request('http://localhost:5000/', headers={'X-VIPER-API-Key': os.environ['VIPER_DASHBOARD_API_KEY']}); urllib.request.urlopen(req)"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD", "python", "-c", "import os, urllib.request; r=urllib.request.Request('http://127.0.0.1:5000/api/health',headers={'X-VIPER-API-Key':os.environ['VIPER_DASHBOARD_API_KEY']}); urllib.request.urlopen(r,timeout=3)"]
+      interval: 15s
+      timeout: 5s
       retries: 3
-    
     logging:
-      driver: "json-file"
-      options:
-        max-size: "10mb"
-        max-file: "3"
+      driver: json-file
+      options: {max-size: 10mb, max-file: "3"}
 
-  # ─── Dashboard Demo (No Packet Capture Required) ───────────────────────────
   dashboard-demo:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: viper-vision-demo
-    image: viper-dashboard:latest
-    profiles: ["demo"]
-    ports:
-      - "127.0.0.1:5050:5000"
+    build: .
+    image: viper-nids:local
+    profiles: [demo]
+    init: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp:size=64m]
+    volumes: [demo-reports:/app/reports]
+    ports: ["127.0.0.1:5050:5000"]
     environment:
-      - VIPER_DASHBOARD_API_KEY=${VIPER_DASHBOARD_API_KEY:?Set VIPER_DASHBOARD_API_KEY before starting the dashboard demo}
-    entrypoint: ["python", "dashboard/app.py"]
+      VIPER_DASHBOARD_API_KEY: ${VIPER_DASHBOARD_API_KEY:?Set VIPER_DASHBOARD_API_KEY}
+    entrypoint: [python, dashboard/app.py]
     command: ["--demo", "--host", "0.0.0.0", "--port", "5000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request; r=urllib.request.Request('http://127.0.0.1:5000/api/health',headers={'X-VIPER-API-Key':os.environ['VIPER_DASHBOARD_API_KEY']}); urllib.request.urlopen(r,timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  reports-data:
+  demo-reports:

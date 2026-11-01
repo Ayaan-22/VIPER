@@ -22,3 +22,7 @@ Install dashboard dependencies from `requirements.txt`. Without `flask-sock`, SS
 ## Docker Capture Limitations
 
 Docker Desktop on Windows/macOS does not expose host interfaces the same way as Linux host networking. Use native execution for the most reliable local packet capture on those platforms.
+
+## Vision 2 changes
+
+Use Python 3.12/3.13 and install the hashed runtime lock. A missing explicit config is now an error: copy the example only if no private config exists. WebSockets are intentionally disabled by the Waitress CLI; polling and SSE remain available. Unknown protocol packet counters mean the log lacks sufficient measured heartbeat snapshots. Stale/waiting sensor status should be investigated using `/api/health`, source log access and `tools/healthcheck.py`. See [Operations](OPERATIONS.md) before changing retention, volumes or deployment.

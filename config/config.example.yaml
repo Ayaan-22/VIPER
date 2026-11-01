@@ -12,6 +12,7 @@ network:
 detection:
   port_scan:
     enabled: true
+    unique_targets_threshold: 15 # Same service across many targets
     unique_ports_threshold: 15   # Unique destination ports in window
     window_seconds: 10
     whitelist_ips: []
@@ -43,8 +44,9 @@ detection:
 
   anomaly:
     enabled: true
-    baseline_window_seconds: 60   # Window to learn baseline
+    baseline_window_seconds: 60   # Rolling trusted sample lookback
     deviation_factor: 3.0         # Std deviations before alerting
+    max_baseline_samples: 512
     min_samples: 20               # Minimum samples before triggering
 
 logging:
@@ -56,6 +58,8 @@ logging:
   console: true
 
 alerting:
+  max_delivery_workers: 4     # Per channel; SMTP and webhook pools are isolated
+  max_delivery_queue: 100
   severity_filter: "LOW"      # Minimum severity to alert: LOW | MEDIUM | HIGH | CRITICAL
 
   email:
@@ -66,6 +70,7 @@ alerting:
     password: ""
     from_addr: ""
     to_addrs: []
+    timeout_seconds: 5
     min_severity: "HIGH"
 
   webhook:
@@ -73,6 +78,7 @@ alerting:
     url: ""
     headers:
       Content-Type: "application/json"
+    timeout_seconds: 5
     min_severity: "MEDIUM"
 
   console:
@@ -88,6 +94,9 @@ capture:
 reporting:
   auto_report_interval: 300   # Seconds between auto-reports (0 = disabled)
   report_dir: "reports"
+  max_files: 500
+  max_total_mb: 512
+  max_age_days: 30
 
 dashboard:
   enabled: true
@@ -96,7 +105,7 @@ dashboard:
   refresh_interval_seconds: 5
   max_live_alerts: 500
   timeline_window_minutes: 60
-  enable_websocket: true
+  enable_websocket: false     # Optional development/Gunicorn deployments only
   log_file_path: "logs/nids.log"
 
 analytics:
@@ -108,3 +117,6 @@ performance:
   worker_threads: 4
   queue_maxsize: 10000
   stats_interval: 10          # Seconds between stats logging
+
+# Each detector also accepts max_state_keys (2048), max_state_events (65536),
+# and max_events_per_key (8192). Capacity losses appear in sensor telemetry.

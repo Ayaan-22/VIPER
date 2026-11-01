@@ -1,33 +1,10 @@
-"""
-brute_force.py
---------------
-Detects credential-brute-force attempts by monitoring the number of
-SYN packets a single source sends to the same service port within a
-sliding time window.
-
-Targeted ports are configurable (default: SSH 22, Telnet 23, RDP 3389,
-FTP 21, SMTP 25, POP3 110, IMAP 143).
-
-Heuristics
-----------
-* Counts SYN-only packets to a watched port per source IP.
-* Ignores RST/FIN floods (those trigger the flood detectors instead).
-* Throttles repeated alerts per (src_ip, dst_port) pair.
-"""
-
-from __future__ import annotations
-
-from typing import Set
-
-from scapy.layers.inet import IP, TCP
+"""Connection-attempt heuristic; authentication failures require host log correlation."""
+from scapy.layers.inet import TCP
 from scapy.packet import Packet
-
 from src.alerting.alert import Severity
-from src.alerting.handler import AlertHandler
-from src.core.sliding_window import SlidingWindowDict
+from src.core.traffic import event_time, network_layer, syn_attempt
 from src.detectors.base import BaseDetector
 
-# Common service port names for human-readable messages
 _PORT_NAMES = {
     21: "FTP",
     22: "SSH",
@@ -43,51 +20,38 @@ _PORT_NAMES = {
 
 
 class BruteForceDetector(BaseDetector):
-    name = "brute_force"
+    name = "brute_force"  # retained event/config identifier for compatibility
 
-    def __init__(self, cfg: dict, handler: AlertHandler):
+    def __init__(self, cfg, handler):
         super().__init__(cfg, handler, whitelist=cfg.get("whitelist_ips", []))
-        self._target_ports: Set[int] = set(
-            cfg.get("target_ports", [22, 23, 3389, 21, 25, 110, 143])
-        )
-        self._threshold: int = cfg.get("attempts_threshold", 10)
+        self._target_ports = set(cfg.get("target_ports", [22, 23, 3389, 21, 25, 110, 143]))
+        self._threshold = cfg.get("attempts_threshold", 10)
         window = cfg.get("window_seconds", 30)
-        # Key: (src_ip, dst_port)
-        self._attempt_windows = SlidingWindowDict(window)
-        self._throttle = SlidingWindowDict(window)
+        self._attempt_windows = self.window(window)
+        self._throttle = self.throttle(window)
+        self._connections = self.throttle(window)
 
-    def process(self, packet: Packet) -> None:
-        if not self.enabled:
+    def process(self, packet):
+        net = network_layer(packet)
+        if not self.enabled or net is None or not syn_attempt(packet) or self.is_whitelisted(net.src):
             return
-        if not (packet.haslayer(IP) and packet.haslayer(TCP)):
+        tcp, now = packet[TCP], event_time(packet)
+        port = int(tcp.dport)
+        if port not in self._target_ports:
             return
-        if packet[TCP].flags != 0x02:       # SYN only
-            return
-
-        dst_port = packet[TCP].dport
-        if dst_port not in self._target_ports:
-            return
-
-        src_ip = packet[IP].src
-        if self.is_whitelisted(src_ip):
-            return
-
-        key = f"{src_ip}:{dst_port}"
-        self._attempt_windows.add(key)
-        count = self._attempt_windows.count(key)
-
-        if count >= self._threshold and self._throttle.count(key) == 0:
-            self._throttle.add(key)
-            service = _PORT_NAMES.get(dst_port, str(dst_port))
-            self.emit(
-                severity=Severity.HIGH,
-                src_ip=src_ip,
-                dst_port=dst_port,
-                message=(
-                    f"Brute-force against {service} (port {dst_port}): "
-                    f"{count} attempts in window"
-                ),
-                service=service,
-                attempts=count,
-                threshold=self._threshold,
-            )
+        key = (net.src, net.dst, port)
+        with self._state_lock:
+            if isinstance(packet, Packet):
+                fingerprint = (*key, int(tcp.sport), int(tcp.seq))
+                if not self._connections.acquire(fingerprint, now):
+                    return
+            self._attempt_windows.add(key, ts=now)
+            count = self._attempt_windows.count(key, now)
+            fire = count >= self._threshold and self._throttle.acquire(key, now)
+        if fire:
+            service = _PORT_NAMES.get(port, str(port))
+            self.emit_packet(packet, severity=Severity.HIGH,
+                             message=f"Repeated connection attempts to {service}: {count} in window; authentication outcome unknown",
+                             service=service, attempts=count, threshold=self._threshold,
+                             window_seconds=self._attempt_windows.window_seconds,
+                             evidence_type="connection_attempts", authentication_outcome="unknown")

@@ -39,10 +39,12 @@ class Reporter:
         alerts: List[Alert],
         processor_stats: Optional[dict] = None,
         save: bool = True,
+        alert_totals: Optional[dict] = None,
     ) -> str:
         uptime = time.time() - self._start_time
-        by_severity = Counter(a.severity.value for a in alerts)
-        by_detector = Counter(a.detector for a in alerts)
+        total = (alert_totals or {}).get("total_alerts", len(alerts))
+        by_severity = Counter((alert_totals or {}).get("by_severity") or (a.severity.value for a in alerts))
+        by_detector = Counter((alert_totals or {}).get("by_detector") or (a.detector for a in alerts))
         top_sources  = Counter(a.src_ip for a in alerts).most_common(10)
 
         lines = [
@@ -54,7 +56,8 @@ class Reporter:
             f"  Uptime    : {uptime/3600:.1f} h  ({uptime:.0f} s)",
             "",
             "  ── Alert Summary ──────────────────────────────────────",
-            f"  Total alerts : {len(alerts)}",
+            f"  Total alerts : {total}",
+            f"  Retained recent alerts : {len(alerts)} (source rankings and charts use retained history)",
         ]
         for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
             count = by_severity.get(sev, 0)
@@ -105,7 +108,9 @@ class Reporter:
                 "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "uptime_seconds": uptime,
                 "summary": {
-                    "total_alerts": len(alerts),
+                    "total_alerts": total,
+                    "retained_alerts": len(alerts),
+                    "ranking_scope": "retained_history",
                     "by_severity":  dict(by_severity),
                     "by_detector":  dict(by_detector),
                     "top_sources":  [{"ip": ip, "count": c} for ip, c in top_sources],

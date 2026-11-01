@@ -1,0 +1,21 @@
+# Install inside nginx's http context. Supply your real hostname/certificates.
+limit_req_zone $binary_remote_addr zone=viper_api:10m rate=10r/s;
+
+server {
+    listen 443 ssl;
+    server_name viper.example;
+    ssl_certificate /etc/ssl/viper/fullchain.pem;
+    ssl_certificate_key /etc/ssl/viper/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 64k;
+
+    location / {
+        limit_req zone=viper_api burst=30 nodelay;
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_read_timeout 310s;
+    }
+}

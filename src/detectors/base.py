@@ -9,6 +9,9 @@ via the shared AlertHandler.
 from __future__ import annotations
 
 import threading
+import time
+from src.core.traffic import evidence, network_layer, packet_timestamp
+from src.core.sliding_window import SlidingWindowDict, AlertThrottle
 from abc import ABC, abstractmethod
 from typing import Optional, Set
 
@@ -41,6 +44,7 @@ class BaseDetector(ABC):
         self.log = get_logger(f"detector.{self.name}")
         self._lock = threading.Lock()
         self._alert_count = 0
+        self._state_lock = threading.RLock()
 
     # ------------------------------------------------------------------
     # Abstract interface
@@ -66,10 +70,12 @@ class BaseDetector(ABC):
         message: str,
         dst_ip: Optional[str] = None,
         dst_port: Optional[int] = None,
+        timestamp=None,
         **metadata,
     ) -> None:
         """Create an Alert and forward it to the handler."""
         alert = Alert(
+            timestamp=time.time() if timestamp is None else timestamp,
             detector=self.name,
             severity=severity,
             src_ip=src_ip,
@@ -91,3 +97,23 @@ class BaseDetector(ABC):
 
     def reset(self) -> None:
         """Optional: subclasses may override to purge stale window data."""
+
+    def window(self, seconds):
+        return SlidingWindowDict(seconds, max_keys=self.cfg.get("max_state_keys", 2048),
+                                 max_events=self.cfg.get("max_state_events", 65536),
+                                 max_events_per_key=self.cfg.get("max_events_per_key", 8192))
+
+    def throttle(self, seconds):
+        return AlertThrottle(seconds, self.cfg.get("max_state_keys", 2048))
+
+    def emit_packet(self, packet, **fields):
+        context = evidence(packet)
+        context.update(fields)
+        self.emit(src_ip=network_layer(packet).src, timestamp=packet_timestamp(packet), **context)
+
+    @property
+    def health(self):
+        windows = [value.stats for value in vars(self).values() if isinstance(value, SlidingWindowDict)]
+        return {"evicted_keys": sum(w["evicted_keys"] for w in windows),
+                "discarded_events": sum(w["discarded_events"] for w in windows),
+                "throttle_evictions": sum(v.evictions for v in vars(self).values() if isinstance(v, AlertThrottle))}

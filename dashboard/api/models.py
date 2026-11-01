@@ -10,6 +10,7 @@ log records without changing detector output or structured logging.
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -23,38 +24,37 @@ def severity_rank(severity: str) -> int:
 
 
 def parse_timestamp(value: Any) -> float:
-    """Return epoch seconds for VIPER's numeric or ISO JSON log timestamps."""
-    if value is None:
-        return 0.0
-    if isinstance(value, (int, float)):
-        return float(value)
-    text = str(value).strip()
-    if not text:
+    """Finite epoch seconds; timezone-less legacy ISO values are interpreted as UTC."""
+    if value is None or value == "":
         return 0.0
     try:
-        return float(text)
-    except ValueError:
-        pass
-    try:
-        normalized = text.replace("Z", "+00:00")
-        return datetime.fromisoformat(normalized).timestamp()
-    except ValueError:
-        return 0.0
+        result = float(value)
+    except (ValueError, TypeError):
+        try:
+            parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            result = parsed.timestamp()
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise ValueError("invalid timestamp") from exc
+    if not math.isfinite(result) or not 0 <= result <= 253402300799:
+        raise ValueError("timestamp outside supported range")
+    return result
 
 
 def format_ts(epoch_seconds: float) -> str:
     if epoch_seconds <= 0:
         return ""
-    return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(parse_timestamp(epoch_seconds), tz=timezone.utc).isoformat()
 
 
 @dataclass
 class PacketSummary:
-    total_packets: int = 0
-    processed_packets: int = 0
-    dropped_packets: int = 0
-    queue_size: int = 0
-    packets_per_second: float = 0.0
+    total_packets: Optional[int] = None
+    processed_packets: Optional[int] = None
+    dropped_packets: Optional[int] = None
+    queue_size: Optional[int] = None
+    packets_per_second: Optional[float] = None
     active_sources: int = 0
     active_destinations: int = 0
     active_protocols: int = 0
@@ -62,6 +62,12 @@ class PacketSummary:
     engine_status: str = "historical"
     interface: str = "log replay"
     uptime_seconds: float = 0.0
+    capture_dropped: int = 0
+    capture_errors: int = 0
+    detector_errors: int = 0
+    notification_losses: int = 0
+    last_seen: float = 0.0
+    session_id: str = ""
 
 
 @dataclass
@@ -89,7 +95,7 @@ class AlertEvent:
 @dataclass
 class TopTalker:
     ip: str
-    packet_count: int = 0
+    packet_count: Optional[int] = None
     alert_count: int = 0
     first_seen: float = 0.0
     last_seen: float = 0.0
@@ -147,6 +153,9 @@ class PortScanEvent:
     severity: str
     detection_threshold: int
     timeline: List[TimelineEvent] = field(default_factory=list)
+    scan_type: str = "multi_port"
+    unique_targets: int = 0
+    sample_targets: List[str] = field(default_factory=list)
 
 
 @dataclass

@@ -32,7 +32,7 @@ def generate_html_report(
     payload = to_plain(metrics)
     generated = time.strftime("%Y-%m-%d %H:%M:%S")
     filename = Path(output_dir) / f"viper_vision_{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns()}.html"
-    html_text = _render(generated, payload, alerts[-25:], suspicious, timeline)
+    html_text = _render(generated, payload, alerts[-25:], suspicious, timeline, mode)
     filename.write_text(html_text, encoding="utf-8")
 
     json_name = filename.with_suffix(".json")
@@ -52,7 +52,7 @@ def generate_html_report(
     return str(filename)
 
 
-def _render(generated: str, metrics: Dict[str, Any], alerts, suspicious, timeline) -> str:
+def _render(generated: str, metrics: Dict[str, Any], alerts, suspicious, timeline, mode="historical") -> str:
     summary = metrics["summary"]
     severity = metrics["alerts_by_severity"]
     rows = "\n".join(
@@ -86,14 +86,15 @@ li{{margin:8px 0}}
 <body><main>
 <p class="muted">Generated {html.escape(generated)}</p>
 <h1>VIPER Vision Security Report</h1>
+<p class="muted">Data mode: {html.escape(mode)}. {"SIMULATED DATA — no live observations." if mode == "demo" else "Historical alert evidence; validate against packet captures and host logs."}</p>
 <section class="grid">
-<div class="card"><div class="muted">Total packets</div><div class="value">{summary["total_packets"]}</div></div>
+<div class="card"><div class="muted">Total packets</div><div class="value">{summary["total_packets"] if summary["total_packets"] is not None else "Unknown"}</div></div>
 <div class="card"><div class="muted">Alerts</div><div class="value">{summary["alerts_generated"]}</div></div>
 <div class="card"><div class="muted">Critical</div><div class="value">{severity.get("CRITICAL", 0)}</div></div>
 <div class="card"><div class="muted">High</div><div class="value">{severity.get("HIGH", 0)}</div></div>
 </section>
 <h2>Executive Summary</h2>
-<p>VIPER observed {summary["alerts_generated"]} alert(s), {summary["active_sources"]} source IP(s), and {summary["active_protocols"]} protocol family/families. Review high and critical sources first, then correlate with PCAP captures and host logs.</p>
+<p>This report contains {summary["alerts_generated"]} alert(s) involving {summary["active_sources"]} alerting source IP(s) and {summary["active_protocols"]} protocol label(s). These describe the selected alert range; packet totals describe the latest sensor session. Connection signals do not establish authentication failure. Review high and critical signals, then correlate with PCAP captures and host logs.</p>
 <h2>Suspicious Connection Groups</h2><table><thead><tr><th>Source</th><th>Destination</th><th>Detector</th><th>Alerts</th><th>Severity</th></tr></thead><tbody>{group_rows}</tbody></table>
 <h2>Recent Alerts</h2><table><thead><tr><th>Title</th><th>Severity</th><th>Source</th><th>Description</th></tr></thead><tbody>{rows}</tbody></table>
 <h2>Attack Timeline</h2><ul>{timeline_rows}</ul>

@@ -5,7 +5,7 @@ Demo mode makes the dashboard useful without raw packet capture, Administrator/r
 ```bash
 python dashboard/app.py --demo
 python main.py --dashboard-demo
-docker-compose --profile demo up dashboard-demo
+docker compose --profile demo up dashboard-demo
 ```
 
 Demo data includes simulated:
@@ -15,10 +15,12 @@ Demo data includes simulated:
 - SYN flood
 - UDP flood
 - ICMP flood
-- Brute-force attempt
+- Repeated connection-attempt signal
 - Statistical anomaly
 - Protocol breakdown
 - Attack timeline
 - Suspicious connection groups
 
 The UI labels demo mode clearly so simulated traffic is not mistaken for real monitoring output.
+
+Compose requires VIPER_DASHBOARD_API_KEY to be set before parsing the services. The main CLI modes load/validate the selected config; the standalone demo command does not require a private config file. Demo reports retain an explicit simulated-data label.

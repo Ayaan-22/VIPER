@@ -18,7 +18,7 @@ EVENT_LABELS = {
     "syn_flood": "SYN flood spike",
     "udp_flood": "UDP flood spike",
     "icmp_flood": "ICMP flood spike",
-    "brute_force": "Brute-force attempt",
+    "brute_force": "Repeated connection attempts",
     "anomaly": "Anomaly detected",
 }
 
@@ -56,7 +56,9 @@ def extract_port_scans(
     grouped: Dict[str, List[AlertEvent]] = defaultdict(list)
     for alert in alerts:
         if alert.detector == "port_scan":
-            key = f"{alert.src_ip}->{alert.dst_ip or 'multiple-targets'}"
+            kind = alert.evidence.get("scan_type", "multi_port")
+            target = "multiple-targets" if kind == "host_sweep" else alert.dst_ip or "multiple-targets"
+            key = f"{alert.src_ip}->{target}:{kind}:{int(alert.timestamp // 120)}"
             grouped[key].append(alert)
 
     scans: List[PortScanEvent] = []
@@ -64,22 +66,22 @@ def extract_port_scans(
         ports = set()
         for alert in related:
             ports.update(ports_from_alert(alert))
-            if "unique_ports" in alert.evidence and not ports:
-                try:
-                    ports.update(range(1, int(alert.evidence["unique_ports"]) + 1))
-                except (TypeError, ValueError):
-                    pass
+
         highest = max((a.severity for a in related), key=severity_rank, default="LOW")
         scans.append(
             PortScanEvent(
                 source_ip=related[0].src_ip,
-                target_ip=related[0].dst_ip or "multiple targets",
-                unique_ports=max(len(ports), int(related[-1].evidence.get("unique_ports", len(ports)) or 0)),
+                target_ip="multiple targets" if related[0].evidence.get("scan_type") == "host_sweep" else related[0].dst_ip or "multiple targets",
+                unique_ports=max(len(ports), max((_safe_count(a.evidence.get("unique_ports")) for a in related), default=0)),
                 ports_touched=sorted(ports)[:200],
                 first_seen=min(a.timestamp for a in related),
                 last_seen=max(a.timestamp for a in related),
                 severity=highest,
-                detection_threshold=detection_threshold,
+                detection_threshold=_safe_count(related[-1].evidence.get("threshold")) or detection_threshold,
+                scan_type="host_sweep" if related[0].evidence.get("scan_type") == "host_sweep" else "multi_port",
+                unique_targets=max((_safe_count(a.evidence.get("unique_targets")) for a in related), default=0),
+                sample_targets=sorted({str(ip)[:128] for a in related
+                    for ip in (a.evidence.get("sample_targets") if isinstance(a.evidence.get("sample_targets"), list) else [])})[:100],
                 timeline=[
                     TimelineEvent(
                         timestamp=a.timestamp,
@@ -97,4 +99,12 @@ def extract_port_scans(
         )
     scans.sort(key=lambda item: (severity_rank(item.severity), item.unique_ports, item.last_seen), reverse=True)
     return scans
+
+
+
+def _safe_count(value):
+    try:
+        return max(0, min(65535, int(value or 0)))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 

@@ -22,7 +22,7 @@ from dashboard.api.models import (
 )
 
 
-DEFAULT_PROTOCOLS = ("TCP", "UDP", "ICMP", "ARP", "DNS", "HTTP", "HTTPS", "OTHER")
+DEFAULT_PROTOCOLS = ("TCP", "UDP", "ICMP", "ICMPV6", "ARP", "OTHER")
 
 
 def build_metrics(
@@ -70,22 +70,28 @@ def build_packet_summary(
     protocols = {a.protocol for a in alerts if a.protocol}
     uptime = 0.0
     if packet_stats:
-        uptime = max(0.0, packet_stats[-1]["timestamp"] - packet_stats[0]["timestamp"])
+        uptime = max(0.0, latest["timestamp"] - (latest.get("started_at") or next((x["timestamp"] for x in packet_stats if x.get("session_id") == latest.get("session_id")), latest["timestamp"])))
     elif alerts:
         uptime = max(0.0, alerts[-1].timestamp - alerts[0].timestamp)
     return PacketSummary(
-        total_packets=total,
-        processed_packets=processed,
-        dropped_packets=dropped,
-        queue_size=queued,
-        packets_per_second=round(pps, 2),
+        total_packets=total if packet_stats else None,
+        processed_packets=processed if packet_stats else None,
+        dropped_packets=dropped if packet_stats else None,
+        queue_size=queued if packet_stats else None,
+        packets_per_second=round(pps, 2) if len(packet_stats) >= 2 else None,
         active_sources=len(source_ips),
         active_destinations=len(destination_ips),
         active_protocols=len(protocols),
         alerts_generated=len(alerts),
         engine_status=engine_status,
-        interface=interface,
+        interface=latest.get("interface") or interface,
         uptime_seconds=round(uptime, 2),
+        capture_dropped=_safe_count(latest.get("capture", {}).get("dropped")),
+        capture_errors=_safe_count(latest.get("capture", {}).get("errors")),
+        detector_errors=_safe_count(latest.get("detector_errors")),
+        notification_losses=_safe_count(latest.get("delivery", {}).get("notifications_failed")) + _safe_count(latest.get("delivery", {}).get("notifications_dropped")),
+        last_seen=latest.get("timestamp", 0.0),
+        session_id=latest.get("session_id", ""),
     )
 
 
@@ -108,7 +114,7 @@ def top_talkers(
         talkers.append(
             TopTalker(
                 ip=ip,
-                packet_count=sum(_packet_hint(a) for a in related),
+                packet_count=None,
                 alert_count=len(related),
                 first_seen=min(a.timestamp for a in related),
                 last_seen=max(a.timestamp for a in related),
@@ -118,7 +124,7 @@ def top_talkers(
                 classification=classify_ip(ip),
             )
         )
-    talkers.sort(key=lambda t: (t.alert_count, severity_rank(t.highest_severity), t.packet_count), reverse=True)
+    talkers.sort(key=lambda t: (t.alert_count, severity_rank(t.highest_severity), t.packet_count or 0), reverse=True)
     return talkers[:limit]
 
 
@@ -140,18 +146,24 @@ def top_ports(alerts: Sequence[AlertEvent], *, limit: int = 10) -> List[Dict[str
 def protocol_breakdown(
     alerts: Sequence[AlertEvent],
     packet_stats: Sequence[Dict[str, Any]] | None = None,
+    *, window_seconds=None,
 ) -> List[ProtocolStats]:
     alert_counts = Counter((a.protocol or "OTHER").upper() for a in alerts)
-    packet_total = sum(_packet_hint(a) for a in alerts)
-    if not packet_total and packet_stats:
-        packet_total = int(packet_stats[-1].get("processed", 0))
-
-    protocol_packet_counts = Counter()
-    for alert in alerts:
-        protocol_packet_counts[(alert.protocol or "OTHER").upper()] += _packet_hint(alert)
-
-    if packet_total and not protocol_packet_counts:
-        protocol_packet_counts["OTHER"] = packet_total
+    measured = packet_stats[-1].get("protocol_counts") if packet_stats else None
+    if window_seconds is not None and packet_stats and measured is not None:
+        latest = packet_stats[-1]
+        same_session = [item for item in packet_stats
+                        if item.get("session_id") == latest.get("session_id")
+                        and item.get("protocol_counts") is not None]
+        recent = [item for item in same_session if item["timestamp"] >= latest["timestamp"] - window_seconds]
+        baseline = recent[0] if recent else latest
+        if baseline["timestamp"] == latest["timestamp"]:
+            measured = None
+        else:
+            measured = {key: max(0, _safe_count(value) - _safe_count(baseline["protocol_counts"].get(key)))
+                        for key, value in measured.items()}
+    protocol_packet_counts = Counter({k: _safe_count(v) for k, v in (measured or {}).items()})
+    packet_total = sum(protocol_packet_counts.values())
 
     protocols = list(DEFAULT_PROTOCOLS)
     for protocol in alert_counts:
@@ -160,14 +172,14 @@ def protocol_breakdown(
 
     stats: List[ProtocolStats] = []
     for protocol in protocols:
-        count = protocol_packet_counts.get(protocol, 0)
-        percentage = (count / packet_total * 100.0) if packet_total else 0.0
+        count = protocol_packet_counts.get(protocol, 0) if measured is not None and protocol in DEFAULT_PROTOCOLS else None
+        percentage = ((count / packet_total * 100.0) if packet_total else 0.0) if count is not None else None
         stats.append(
             ProtocolStats(
                 protocol=protocol,
                 packet_count=count,
                 alert_count=alert_counts.get(protocol, 0),
-                percentage=round(percentage, 2),
+                percentage=round(percentage, 2) if percentage is not None else None,
                 trend=_protocol_trend(alerts, protocol),
             )
         )
@@ -187,10 +199,10 @@ def packet_rate_over_time(packet_stats: Sequence[Dict[str, Any]]) -> List[Dict[s
     points: List[Dict[str, Any]] = []
     previous = None
     for stat in packet_stats:
-        if previous:
-            elapsed = max(1.0, stat["timestamp"] - previous["timestamp"])
+        if previous and previous.get("session_id") == stat.get("session_id"):
+            elapsed = stat["timestamp"] - previous["timestamp"]
             delta = max(0, int(stat.get("processed", 0)) - int(previous.get("processed", 0)))
-            pps = delta / elapsed
+            pps = delta / elapsed if elapsed > 0 else 0.0
         else:
             pps = 0.0
         points.append(
@@ -212,12 +224,12 @@ def classify_ip(ip: str) -> str:
         parsed = ipaddress.ip_address(ip)
     except ValueError:
         return "unknown"
-    if parsed.is_private:
-        return "private"
     if parsed.is_loopback:
         return "loopback"
     if parsed.is_multicast:
         return "multicast"
+    if parsed.is_private:
+        return "private"
     return "public"
 
 
@@ -230,8 +242,10 @@ def ports_from_alert(alert: AlertEvent) -> List[int]:
         if isinstance(raw, Iterable) and not isinstance(raw, (str, bytes, dict)):
             for item in raw:
                 try:
-                    ports.add(int(item))
-                except (TypeError, ValueError):
+                    port = int(item)
+                    if 1 <= port <= 65535:
+                        ports.add(port)
+                except (TypeError, ValueError, OverflowError):
                     continue
     return sorted(ports)
 
@@ -259,21 +273,18 @@ def _packet_rate(packet_stats: Sequence[Dict[str, Any]]) -> float:
         return 0.0
     latest = packet_stats[-1]
     previous = packet_stats[-2]
-    elapsed = max(1.0, latest["timestamp"] - previous["timestamp"])
+    if latest.get("session_id") != previous.get("session_id"):
+        return 0.0
+    elapsed = latest["timestamp"] - previous["timestamp"]
     delta = max(0, int(latest.get("processed", 0)) - int(previous.get("processed", 0)))
-    return delta / elapsed
+    return delta / elapsed if elapsed > 0 else 0.0
 
 
-def _packet_hint(alert: AlertEvent) -> int:
-    for key in ("rate_pps", "unique_ports", "samples", "attempts", "packet_count"):
-        value = alert.evidence.get(key)
-        try:
-            numeric = int(float(value))
-        except (TypeError, ValueError):
-            continue
-        if numeric > 0:
-            return numeric
-    return 1
+def _safe_count(value):
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def _protocol_trend(alerts: Sequence[AlertEvent], protocol: str) -> List[Dict[str, Any]]:

@@ -9,7 +9,10 @@ applies the per-channel minimum-severity filter defined in config.
 from __future__ import annotations
 
 import json
+import logging
 import smtplib
+import ssl
+from collections import Counter
 import threading
 import urllib.request
 from collections import deque
@@ -21,6 +24,7 @@ from src.alerting.alert import Alert, Severity, severity_gte
 from src.logger.logger import get_logger
 
 log = get_logger("alerting.handler")
+log.setLevel(logging.INFO)  # Persist security events regardless of diagnostic verbosity.
 
 
 def _parse_severity(value: object, default: Severity, field_name: str) -> Severity:
@@ -36,11 +40,18 @@ class AlertHandler:
         self._cfg = cfg
         self._lock = threading.Lock()
         self._history: deque = deque(maxlen=10000)
+        self.session_id = None
+        self._total = 0
+        self._by_severity = Counter()
+        self._by_detector = Counter()
+        self._delivery_dropped = self._delivery_failed = self._delivery_sent = 0
         self._min_severity = _parse_severity(cfg.get("severity_filter", "LOW"), Severity.LOW, "severity_filter")
         max_workers = max(1, int(cfg.get("max_delivery_workers", 4)))
         max_queue = max(0, int(cfg.get("max_delivery_queue", 100)))
         self._delivery_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="nids-alert")
         self._delivery_slots = threading.BoundedSemaphore(max_workers + max_queue)
+        self._webhook_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="nids-webhook")
+        self._webhook_slots = threading.BoundedSemaphore(max_workers + max_queue)
 
     # ------------------------------------------------------------------
     # Public API
@@ -53,10 +64,18 @@ class AlertHandler:
 
         with self._lock:
             self._history.append(alert)
+            self._total += 1
+            self._by_severity[alert.severity.value] += 1
+            self._by_detector[alert.detector] += 1
+            if self.session_id:
+                alert.metadata["session_id"] = self.session_id
 
         # Console
         if self._cfg.get("console", {}).get("enabled", True):
-            self._to_console(alert)
+            try:
+                self._to_console(alert)
+            except (OSError, UnicodeError):
+                log.exception("Console alert output failed")
 
         # File log (structured)
         self._to_log(alert)
@@ -87,7 +106,10 @@ class AlertHandler:
             self._history.clear()
 
     def shutdown(self, wait: bool = False) -> None:
-        self._delivery_executor.shutdown(wait=wait, cancel_futures=not wait)
+        # Finish in-flight bounded I/O; do not extend shutdown by draining a
+        # saturated notification backlog. Cancellation is recorded as loss.
+        self._delivery_executor.shutdown(wait=wait, cancel_futures=True)
+        self._webhook_executor.shutdown(wait=wait, cancel_futures=True)
 
     # ------------------------------------------------------------------
     # Output channels
@@ -130,16 +152,28 @@ class AlertHandler:
             log.info("alert", extra=alert.to_log_dict())
 
     def _submit_delivery(self, fn, alert: Alert, cfg: dict) -> None:
-        if not self._delivery_slots.acquire(blocking=False):
+        webhook = cfg is self._cfg.get("webhook")
+        executor = self._webhook_executor if webhook else self._delivery_executor
+        slots = self._webhook_slots if webhook else self._delivery_slots
+        if not slots.acquire(blocking=False):
+            with self._lock:
+                self._delivery_dropped += 1
             log.warning("Alert delivery queue is full; dropping async notification")
             return
         try:
-            future = self._delivery_executor.submit(fn, alert, cfg)
+            future = executor.submit(fn, alert, cfg)
         except RuntimeError:
-            self._delivery_slots.release()
+            slots.release()
+            with self._lock:
+                self._delivery_dropped += 1
             log.warning("Alert delivery executor is shut down; dropping async notification")
             return
-        future.add_done_callback(lambda _future: self._delivery_slots.release())
+        def completed(result):
+            if result.cancelled():
+                with self._lock:
+                    self._delivery_dropped += 1
+            slots.release()
+        future.add_done_callback(completed)
 
     def _to_email(self, alert: Alert, cfg: dict) -> None:
         try:
@@ -147,11 +181,15 @@ class AlertHandler:
             msg["Subject"] = f"[NIDS] {alert.severity.value}: {alert.detector} from {alert.src_ip}"
             msg["From"] = cfg["from_addr"]
             msg["To"] = ", ".join(cfg["to_addrs"])
-            with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"]) as s:
-                s.starttls()
+            with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=cfg.get("timeout_seconds", 5)) as s:
+                s.starttls(context=ssl.create_default_context())
                 s.login(cfg["username"], cfg["password"])
                 s.sendmail(cfg["from_addr"], cfg["to_addrs"], msg.as_string())
+            with self._lock:
+                self._delivery_sent += 1
         except Exception as exc:
+            with self._lock:
+                self._delivery_failed += 1
             log.error(f"Email alert failed: {exc}")
 
     def _to_webhook(self, alert: Alert, cfg: dict) -> None:
@@ -163,6 +201,19 @@ class AlertHandler:
                 headers=cfg.get("headers", {"Content-Type": "application/json"}),
                 method="POST",
             )
-            urllib.request.urlopen(req, timeout=5)
+            with urllib.request.urlopen(req, timeout=cfg.get("timeout_seconds", 5)) as response:
+                response.read(1024)
+            with self._lock:
+                self._delivery_sent += 1
         except Exception as exc:
+            with self._lock:
+                self._delivery_failed += 1
             log.error(f"Webhook alert failed: {exc}")
+
+    @property
+    def stats(self):
+        with self._lock:
+            return {"total_alerts": self._total, "retained_alerts": len(self._history),
+                    "by_severity": dict(self._by_severity), "by_detector": dict(self._by_detector),
+                    "notifications_sent": self._delivery_sent, "notifications_failed": self._delivery_failed,
+                    "notifications_dropped": self._delivery_dropped}
